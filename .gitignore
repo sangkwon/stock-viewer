@@ -1,0 +1,14 @@
+# 가상환경 / 캐시
+.venv/
+__pycache__/
+*.pyc
+
+# 실행 로그 (launchd 예약 실행 결과)
+logs/
+
+# macOS
+.DS_Store
+
+# 비밀값 — 키체인에 보관하므로 저장소에는 올리지 않지만, 실수 방지용
+.env
+*.pem
