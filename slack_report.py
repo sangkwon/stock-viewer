@@ -57,8 +57,8 @@ def eok(v):
     return f"{v / 1e8:+,.0f}억"
 
 
-def quote_lines(q, today=""):
-    """종목 한 개의 줄 목록: 시세 줄 + (있으면) 순매수 줄. today = 오늘 날짜 YYYYMMDD (순매수가 전 거래일 값인지 표시용)"""
+def quote_lines(q):
+    """종목 한 개의 줄 목록: 시세 줄 + (있으면) 순매수 줄(외국인 / 기관 / 개인)"""
     if q.get("error"):
         return [f"*{esc(q['name'])}*  조회 실패"]
     dec = 0 if q.get("code") else q.get("dec", 2)
@@ -69,10 +69,8 @@ def quote_lines(q, today=""):
     s = spark(q.get("intraday") or [])
     lines = [f"*{esc(q['name'])}*  {price}  {chg}" + (f"  `{s}`" if s else "")]
     inv = q.get("investors")
-    if inv:
-        d = inv["date"]
-        note = f"{d[4:6]}/{d[6:8]} 순매수" + ("" if d == today else ", 전 거래일 기준")
-        lines.append(f"      외국인 {eok(inv['foreign'])} · 기관 {eok(inv['organ'])} · 개인 {eok(inv['individual'])}  _({note})_")
+    if inv:  # 외국인 / 기관 / 개인 순서
+        lines.append(f"      {eok(inv['foreign'])} / {eok(inv['organ'])} / {eok(inv['individual'])}")
     return lines
 
 
@@ -135,7 +133,7 @@ def build(mode, data, now, label=None):
     head = f"📈 주식 시세 리포트 · {title} · {now:%m/%d}({WEEKDAY[now.weekday()]}) {now:%H:%M}"
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": head}}]
     for name, items in sections:
-        lines = [l for q in items for l in quote_lines(q, f"{now:%Y%m%d}")]
+        lines = [l for q in items for l in quote_lines(q)]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{name}*\n" + "\n".join(lines)[:2900]}})
     return head, blocks
 
