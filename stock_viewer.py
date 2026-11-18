@@ -252,13 +252,13 @@ def get_us(item, is_index):
 
 
 def get_all(parts=("kr", "us"), investors=True):
-    """parts: "kr" = 시장+관심 종목, "us" = 해외 지수+글로벌 지표+해외 종목. 요청하지 않은 항목은 빈 목록.
+    """parts: "kr" = 시장+관심 종목+글로벌 지표, "us" = 해외 지수+해외 종목. 요청하지 않은 항목은 빈 목록.
     investors=False 이면 KRX(순매수) 조회를 건너뜁니다 (Slack 장중 리포트용)."""
     kr, us = "kr" in parts, "us" in parts
     with ThreadPoolExecutor(max_workers=4) as ex:
         markets = ex.map(lambda i: get_market(i, investors), MARKETS if kr else [])
         stocks = ex.map(lambda i: get_quote(i, investors), TICKERS if kr else [])
-        macros = ex.map(get_macro, MACROS if us else [])
+        macros = ex.map(get_macro, MACROS if kr else [])
         us_idx = ex.map(lambda i: get_us(i, True), US_INDEXES if us else [])
         us_stocks = ex.map(lambda i: get_us(i, False), US_TICKERS if us else [])
         return {"markets": list(markets), "us_indexes": list(us_idx), "macros": list(macros),

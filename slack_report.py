@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """주식 시세 리포트를 Slack 웹훅으로 전송.
 
-    .venv/bin/python slack_report.py --mode kr        # 국내: 시장 + 관심 종목
-    .venv/bin/python slack_report.py --mode us        # 해외: 해외 지수 + 글로벌 지표 + 해외 종목
+    .venv/bin/python slack_report.py --mode kr        # 국내: 시장 + 관심 종목 + 글로벌 지표
+    .venv/bin/python slack_report.py --mode us        # 해외: 해외 지수 + 해외 종목
     .venv/bin/python slack_report.py --mode all       # 전부
     .venv/bin/python slack_report.py --mode kr --dry-run   # 전송하지 않고 내용만 출력
 
@@ -116,9 +116,9 @@ def build(mode, data, now, label=None):
     if mode in ("kr", "all"):
         sections.append(("🇰🇷 시장", data["markets"]))
         sections.append(("⭐ 관심 종목", data["stocks"]))
+        sections.append(("🌐 글로벌 지표", data["macros"]))
     if mode in ("us", "all"):
         sections.append(("🇺🇸 해외 지수", data["us_indexes"]))
-        sections.append(("🌐 글로벌 지표", data["macros"]))
         sections.append(("💵 해외 종목 (USD)", data["us_stocks"]))
     title = label or {"kr": "국내", "us": "미국", "all": "종합"}[mode]
     head = f"📈 주식 시세 리포트 · {title} · {now:%m/%d}({WEEKDAY[now.weekday()]}) {now:%H:%M}"
