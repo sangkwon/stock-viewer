@@ -53,16 +53,27 @@ def esc(t):
     return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def quote_line(q):
+def eok(v):
+    return f"{v / 1e8:+,.0f}억"
+
+
+def quote_lines(q, today=""):
+    """종목 한 개의 줄 목록: 시세 줄 + (있으면) 순매수 줄. today = 오늘 날짜 YYYYMMDD (순매수가 전 거래일 값인지 표시용)"""
     if q.get("error"):
-        return f"*{esc(q['name'])}*  조회 실패"
+        return [f"*{esc(q['name'])}*  조회 실패"]
     dec = 0 if q.get("code") else q.get("dec", 2)
     suffix = q.get("suffix", "")
     arrow = "🔴▲" if q["ratio"] > 0 else "🔵▼" if q["ratio"] < 0 else "⚪"
     price = f"{q.get('prefix', '')}{num(q['price'], dec)}{suffix}"
     chg = f"{arrow} {num(abs(q['change']), dec)}{'%p' if suffix else ''} ({q['ratio']:+.2f}%)"
     s = spark(q.get("intraday") or [])
-    return f"*{esc(q['name'])}*  {price}  {chg}" + (f"  `{s}`" if s else "")
+    lines = [f"*{esc(q['name'])}*  {price}  {chg}" + (f"  `{s}`" if s else "")]
+    inv = q.get("investors")
+    if inv:
+        d = inv["date"]
+        note = f"{d[4:6]}/{d[6:8]} 순매수" + ("" if d == today else ", 전 거래일 기준")
+        lines.append(f"      외국인 {eok(inv['foreign'])} · 기관 {eok(inv['organ'])} · 개인 {eok(inv['individual'])}  _({note})_")
+    return lines
 
 
 def last_ts(q):
@@ -124,7 +135,7 @@ def build(mode, data, now, label=None):
     head = f"📈 주식 시세 리포트 · {title} · {now:%m/%d}({WEEKDAY[now.weekday()]}) {now:%H:%M}"
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": head}}]
     for name, items in sections:
-        lines = [quote_line(q) for q in items]
+        lines = [l for q in items for l in quote_lines(q, f"{now:%Y%m%d}")]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{name}*\n" + "\n".join(lines)[:2900]}})
     return head, blocks
 
@@ -166,7 +177,7 @@ def run(mode, scheduled=False, force=False, dry_run=False, response_url=None):
             return True, f"[{now:%F %T}] 전송 생략: {skip}"
     parts = ("kr",) if mode == "kr" else ("us",) if mode == "us" else ("kr", "us")
     with contextlib.redirect_stdout(io.StringIO()):  # 라이브러리 로그 숨김
-        data = sv.get_all(parts, investors=False)  # 장중 리포트에는 순매수 줄을 넣지 않는다
+        data = sv.get_all(parts, investors=(mode != "us"))  # 순매수(KRX)는 국내 리포트에만
     if not force:
         max_age = SCHEDULED_MAX_AGE if scheduled else MANUAL_MAX_AGE
         reason = stale_reason(mode, data, now, max_age)
