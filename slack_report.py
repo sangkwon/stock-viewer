@@ -57,8 +57,9 @@ def eok(v):
     return f"{v / 1e8:+,.0f}억"
 
 
-def quote_lines(q):
-    """종목 한 개의 줄 목록: 시세 줄 + (있으면) 순매수 줄(외국인 / 기관 / 개인)"""
+def quote_lines(q, today=""):
+    """종목 한 개의 줄 목록: 시세 줄 + (있으면) 순매수 줄(외국인 / 기관 / 개인).
+    today = 오늘 날짜 YYYYMMDD. 순매수 값이 오늘 것이 아니면 줄 끝에 (전일) 표시."""
     if q.get("error"):
         return [f"*{esc(q['name'])}*  조회 실패"]
     dec = 0 if q.get("code") else q.get("dec", 2)
@@ -70,7 +71,8 @@ def quote_lines(q):
     lines = [f"*{esc(q['name'])}*  {price}  {chg}" + (f"  `{s}`" if s else "")]
     inv = q.get("investors")
     if inv:  # 외국인 / 기관 / 개인 순서
-        lines.append(f"      {eok(inv['foreign'])} / {eok(inv['organ'])} / {eok(inv['individual'])}")
+        stale = "  (전일)" if inv["date"] != today else ""
+        lines.append(f"      {eok(inv['foreign'])} / {eok(inv['organ'])} / {eok(inv['individual'])}{stale}")
     return lines
 
 
@@ -133,7 +135,7 @@ def build(mode, data, now, label=None):
     head = f"📈 주식 시세 리포트 · {title} · {now:%m/%d}({WEEKDAY[now.weekday()]}) {now:%H:%M}"
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": head}}]
     for name, items in sections:
-        lines = [l for q in items for l in quote_lines(q)]
+        lines = [l for q in items for l in quote_lines(q, f"{now:%Y%m%d}")]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{name}*\n" + "\n".join(lines)[:2900]}})
     return head, blocks
 
