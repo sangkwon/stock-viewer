@@ -1,0 +1,6 @@
+.venv
+logs
+launchd
+vercel-spike
+README.md
+__pycache__

@@ -5,7 +5,8 @@
     .venv/bin/python stock_viewer.py   →  http://localhost:8000
 - 현재가·전일종가: yfinance (야후 파이낸스, 지연 시세일 수 있음)
 - 투자자별 순매수(외국인·기관·개인): pykrx (KRX 로그인 필요)
-  KRX 계정은 macOS 키체인에서 읽습니다 (코드/파일에 저장하지 않음).
+  KRX 계정은 환경변수(KRX_ID/KRX_PW, Vercel 배포용)가 있으면 그것을, 없으면 macOS 키체인에서 읽습니다
+  (코드/파일에 저장하지 않음).
 """
 import datetime as dt
 import json
@@ -24,7 +25,9 @@ KEYCHAIN_SERVICE = "krx-pw"
 
 
 def load_krx_credentials():
-    """키체인에서 KRX ID/PW를 읽어 pykrx가 쓰는 환경변수(KRX_ID/KRX_PW)에 넣는다."""
+    """KRX ID/PW를 pykrx가 쓰는 환경변수(KRX_ID/KRX_PW)에 준비한다. 이미 있으면(Vercel) 그대로 쓰고, 없으면 키체인에서 읽는다."""
+    if os.environ.get("KRX_ID") and os.environ.get("KRX_PW"):
+        return True
     try:
         meta = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE],
                               capture_output=True, text=True, check=True).stdout
@@ -159,7 +162,7 @@ def get_intraday(symbol, macro=False, us=False):
 def get_investors(code):
     """pykrx로 최근 거래일의 투자자별 순매수 거래대금(원). 반환: (데이터 또는 None, 오류 사유)"""
     if not HAS_KRX_LOGIN:
-        return None, f"키체인에서 '{KEYCHAIN_SERVICE}' 항목을 읽지 못했습니다"
+        return None, f"KRX 계정을 찾지 못했습니다 (환경변수 KRX_ID/KRX_PW 또는 키체인 '{KEYCHAIN_SERVICE}')"
     hit = _inv_cache.get(code)
     if hit and time.time() - hit[0] < INVESTOR_CACHE_SECONDS:
         return hit[1]
@@ -184,7 +187,7 @@ def get_investors(code):
     return result
 
 
-def get_quote(item):
+def get_quote(item, investors=True):
     symbol, name = item
     code = symbol[:6]
     out = {"code": code, "name": name}
@@ -196,11 +199,12 @@ def get_quote(item):
         out["error"] = f"시세 조회 실패: {e}"
         return out
     out["intraday"], out["domain"] = get_intraday(symbol)
-    out["investors"], out["investors_error"] = get_investors(code)
+    if investors:
+        out["investors"], out["investors_error"] = get_investors(code)
     return out
 
 
-def get_market(item):
+def get_market(item, investors=True):
     symbol, name, market = item
     out = {"name": name}
     try:
@@ -211,7 +215,8 @@ def get_market(item):
         out["error"] = f"지수 조회 실패: {e}"
         return out
     out["intraday"], out["domain"] = get_intraday(symbol)
-    out["investors"], out["investors_error"] = get_investors(market)  # 시장 전체 순매수
+    if investors:
+        out["investors"], out["investors_error"] = get_investors(market)  # 시장 전체 순매수
     return out
 
 
@@ -246,13 +251,16 @@ def get_us(item, is_index):
     return out
 
 
-def get_all():
+def get_all(parts=("kr", "us"), investors=True):
+    """parts: "kr" = 시장+관심 종목, "us" = 해외 지수+글로벌 지표+해외 종목. 요청하지 않은 항목은 빈 목록.
+    investors=False 이면 KRX(순매수) 조회를 건너뜁니다 (Slack 장중 리포트용)."""
+    kr, us = "kr" in parts, "us" in parts
     with ThreadPoolExecutor(max_workers=4) as ex:
-        markets = ex.map(get_market, MARKETS)
-        macros = ex.map(get_macro, MACROS)
-        us_idx = ex.map(lambda i: get_us(i, True), US_INDEXES)
-        stocks = ex.map(get_quote, TICKERS)
-        us_stocks = ex.map(lambda i: get_us(i, False), US_TICKERS)
+        markets = ex.map(lambda i: get_market(i, investors), MARKETS if kr else [])
+        stocks = ex.map(lambda i: get_quote(i, investors), TICKERS if kr else [])
+        macros = ex.map(get_macro, MACROS if us else [])
+        us_idx = ex.map(lambda i: get_us(i, True), US_INDEXES if us else [])
+        us_stocks = ex.map(lambda i: get_us(i, False), US_TICKERS if us else [])
         return {"markets": list(markets), "us_indexes": list(us_idx), "macros": list(macros),
                 "stocks": list(stocks), "us_stocks": list(us_stocks)}
 
