@@ -52,7 +52,9 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
-        if u.path == "/api/report":
+        # vercel.json 의 rewrite 가 원래 경로를 ?route= 로 넘겨준다 (rewrite 뒤에는 self.path 가 /api/index 가 됨)
+        route = q.get("route", [""])[0] or u.path
+        if route in ("report", "/api/report"):
             return self._report(q)
 
         token = os.environ.get("DASH_TOKEN")
@@ -67,11 +69,11 @@ class handler(BaseHTTPRequestHandler):
             return self._send(401, "접근 권한이 없습니다")
 
         import stock_viewer as sv
-        if u.path == "/api/quotes":
+        if route in ("quotes", "/api/quotes"):
             with contextlib.redirect_stdout(io.StringIO()):  # pykrx 로그인 로그 숨김
                 data = sv.get_all()
             return self._send(200, json.dumps(data, ensure_ascii=False), "application/json")
-        if u.path in ("/", "/index.html", "/api/index"):
+        if route in ("home", "/", "/index.html", "/api/index"):
             return self._send(200, sv.PAGE.replace("__REFRESH__", str(sv.REFRESH_SECONDS)), "text/html")
         return self._send(404, "not found")
 
