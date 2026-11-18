@@ -1,10 +1,12 @@
-"""Vercel 서버리스 진입점: 대시보드(/), 시세 API(/api/quotes), Slack 리포트(/api/report).
+"""Vercel 서버리스 진입점: 대시보드(/), 시세 API(/api/quotes), Slack 리포트(/api/report), 슬래시 커맨드(/api/slack).
 
 환경변수 (Vercel 프로젝트 설정):
   DASH_TOKEN         대시보드 접근 토큰. 처음 한 번 https://<주소>/?key=<토큰> 으로 접속하면 쿠키가 저장된다.
   CRON_SECRET        /api/report 호출용. 헤더 `Authorization: Bearer <값>` 이 맞아야 한다 (GitHub Actions가 사용).
   KRX_ID, KRX_PW     KRX 로그인 (순매수 조회)
   SLACK_WEBHOOK_URL  Slack Incoming Webhook
+  SLACK_SIGNING_SECRET  슬래시 커맨드(/report) 요청 서명 검증용 (Slack 앱 Basic Information)
+  SLACK_ALLOWED_USER_ID, SLACK_ALLOWED_CHANNEL_ID  (선택) 지정하면 해당 사용자/채널의 커맨드만 허용
 토큰/시크릿이 설정되지 않으면 해당 경로는 열리지 않는다 (fail closed).
 """
 import contextlib
@@ -14,6 +16,7 @@ import io
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -37,6 +40,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         self.send_header("Cache-Control", "private, no-store")  # 인증이 필요한 응답이 CDN에 캐시되지 않게
+        self.send_header("Content-Length", str(len(body)))  # 응답 본문이 끝났음을 알려 클라이언트(Slack)가 바로 받게 함
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
@@ -91,3 +95,54 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             return self._send(500, f"{type(e).__name__}: {e}")
         return self._send(200 if ok else 502, msg)
+
+    # ───────── Slack 슬래시 커맨드: /report [kr|us] ─────────
+    def do_POST(self):
+        u = urlparse(self.path)
+        route = parse_qs(u.query).get("route", [""])[0] or u.path
+        if route not in ("slack", "/api/slack"):
+            return self._send(404, "not found")
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if not self._slack_verified(raw):
+            return self._send(401, "invalid signature")
+        if self.headers.get("X-Slack-Retry-Num"):  # Slack의 재시도 요청은 무시 (중복 리포트 방지)
+            return self._send(200, "")
+        form = {k: v[0] for k, v in parse_qs(raw.decode()).items()}
+        allowed_user = os.environ.get("SLACK_ALLOWED_USER_ID")
+        allowed_channel = os.environ.get("SLACK_ALLOWED_CHANNEL_ID")
+        if (allowed_user and form.get("user_id") != allowed_user) or \
+           (allowed_channel and form.get("channel_id") != allowed_channel):
+            return self._ephemeral("이 커맨드를 사용할 수 없는 사용자/채널입니다.")
+        arg = form.get("text", "").strip().lower()
+        mode = {"": "all", "all": "all", "kr": "kr", "us": "us"}.get(arg)
+        if mode is None:
+            return self._ephemeral("사용법: `/report` (전체), `/report kr` (국내), `/report us` (해외)")
+        # 3초 안에 응답해야 하므로 먼저 접수 응답을 보내고, 완성되면 response_url 로 게시한다.
+        self._ephemeral("⏳ 리포트를 만드는 중입니다 (10~20초)…")
+        try:
+            self.wfile.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        import slack_report
+        url = form.get("response_url", "")
+        try:
+            ok, msg = slack_report.run(mode, scheduled=False, response_url=url)
+            if "전송 생략" in msg:  # 휴장일 등: 요청한 사람에게만 사유 안내
+                slack_report.post_response_url(url, msg.split("] ", 1)[-1], ephemeral=True)
+        except Exception as e:  # noqa: BLE001
+            try:
+                slack_report.post_response_url(url, f"리포트 생성 실패: {type(e).__name__}: {e}"[:300], ephemeral=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ephemeral(self, text):
+        self._send(200, json.dumps({"response_type": "ephemeral", "text": text}, ensure_ascii=False), "application/json")
+
+    def _slack_verified(self, raw):
+        secret = os.environ.get("SLACK_SIGNING_SECRET")
+        ts = self.headers.get("X-Slack-Request-Timestamp", "")
+        sig = self.headers.get("X-Slack-Signature", "")
+        if not secret or not ts.isdigit() or abs(time.time() - int(ts)) > 300:
+            return False
+        want = "v0=" + hmac.new(secret.encode(), b"v0:" + ts.encode() + b":" + raw, hashlib.sha256).hexdigest()
+        return _same(sig, want)

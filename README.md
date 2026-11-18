@@ -12,7 +12,8 @@ Vercel(서울 리전)에 배포해 운영하고, 로컬에서도 그대로 실�
 GitHub Actions (cron, UTC)  ──HTTP──▶  Vercel 함수 (api/index.py, 서울 리전)  ──▶  Slack 웹훅
                                           ├─ /                대시보드 (토큰 쿠키 인증)
                                           ├─ /api/quotes      시세 JSON (같은 인증)
-                                          └─ /api/report      Slack 전송 (Bearer CRON_SECRET)
+                                          ├─ /api/report      Slack 전송 (Bearer CRON_SECRET)
+                                          └─ /api/slack       Slack 슬래시 커맨드 /report (서명 검증)
                                        yfinance(야후) · pykrx(KRX 로그인) 로 데이터 조회
 ```
 
@@ -43,6 +44,8 @@ Vercel Hobby 플랜의 Cron은 하루 1회까지라 GitHub Actions를 트리거�
 | KRX 비밀번호 | 환경변수 `KRX_PW` | 서비스 `krx-pw`의 비밀번호 | – |
 | Slack 웹훅 URL | 환경변수 `SLACK_WEBHOOK_URL` | 서비스 `slack-webhook-url` | – |
 | 대시보드 접속 토큰 | 환경변수 `DASH_TOKEN` | (로컬 서버는 인증 없음) | – |
+| 슬래시 커맨드 서명 검증 | 환경변수 `SLACK_SIGNING_SECRET` | – | – |
+| (선택) 허용 사용자/채널 | 환경변수 `SLACK_ALLOWED_USER_ID`, `SLACK_ALLOWED_CHANNEL_ID` | – | – |
 | 리포트 호출 시크릿 | 환경변수 `CRON_SECRET` | – | Secret `CRON_SECRET` (같은 값) |
 | 배포 주소 | – | – | Variable `REPORT_BASE_URL` (비밀 아님) |
 
@@ -100,6 +103,22 @@ security delete-generic-password -s krx-pw
 ## 대시보드 접속
 
 배포 주소(`https://<프로젝트>.vercel.app`)에 처음 한 번만 `https://<프로젝트>.vercel.app/?key=<DASH_TOKEN>` 으로 접속하면 쿠키(1년)가 저장되고 주소에서 토큰이 사라집니다. 브라우저를 바꾸거나 쿠키를 지우면 다시 토큰이 필요합니다.
+
+## Slack 슬래시 커맨드 `/report`
+
+예약 시각 외에, Slack 채널에서 `/report`(전체), `/report kr`(국내), `/report us`(해외)를 입력하면 바로 리포트가 **채널 전체에 공개**로 올라옵니다. 휴장일이면 요청한 사람에게만 사유가 보입니다.
+
+설정 (봇 토큰은 필요 없고, 웹훅을 만든 같은 Slack 앱을 사용합니다):
+1. <https://api.slack.com/apps> → 해당 앱 → **Slash Commands** → *Create New Command*
+   - Command: `/report`, Request URL: `https://<프로젝트>.vercel.app/api/slack`, Short Description: 주식 리포트 전송
+2. 앱을 워크스페이스에 **다시 설치** (Install App → Reinstall)
+3. **Basic Information → App Credentials → Signing Secret**을 Vercel 환경변수로 등록 후 재배포
+   ```bash
+   vercel env add SLACK_SIGNING_SECRET production --sensitive
+   ```
+4. (선택) 본인과 `#briefo` 채널로 제한: 사용자 ID/채널 ID(Slack에서 프로필·채널 정보의 "ID 복사")를 `SLACK_ALLOWED_USER_ID`, `SLACK_ALLOWED_CHANNEL_ID`로 등록
+
+동작: Slack은 3초 안에 응답을 요구하므로 서버가 먼저 "리포트를 만드는 중" 안내(본인에게만 보임)를 보내고, 완성되면 Slack이 준 `response_url`로 게시합니다. 서명(`X-Slack-Signature`)과 타임스탬프(5분 이내)를 검증하며, Slack의 재시도 요청은 무시합니다.
 
 ## Slack 리포트 일정
 
@@ -173,6 +192,8 @@ cd stock-viewer
 |---|---|
 | 대시보드에 "접근 권한이 없습니다" | 쿠키가 없습니다. `/?key=<DASH_TOKEN>` 으로 접속하세요. 토큰을 바꿨다면 재배포가 필요합니다. |
 | Actions 실행이 401로 실패 | Vercel `CRON_SECRET`과 GitHub Secret 값이 다르거나, 값을 바꾼 뒤 재배포하지 않았습니다. |
+| `/report`가 `operation_timeout` 오류 | 함수가 응답을 늦게 보내는 경우입니다(리포트는 올 수 있음). 이 경우 GitHub Actions `workflow_dispatch`로 호출하는 방식으로 바꿔야 합니다. |
+| `/report`가 `invalid signature` 또는 응답 없음 | `SLACK_SIGNING_SECRET` 값이 틀렸거나 등록 후 재배포하지 않았습니다. |
 | Actions는 성공인데 Slack에 안 옴 | 응답이 "전송 생략"(휴장일·발송 시간대 아님)일 수 있습니다. Actions 실행 로그를 확인하세요. |
 | 순매수가 `-` 이거나 비어 있음 | KRX 로그인 실패(환경변수/키체인 확인) 또는 ETF처럼 pykrx가 지원하지 않는 종목입니다. |
 | 시세 카드가 가끔 오류로 표시 | 야후 응답 누락/제한입니다. 1회 재시도와 직전 값 사용으로 완화되어 있습니다. |

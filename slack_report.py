@@ -144,8 +144,20 @@ def post(text, blocks):
         return r.status, r.read().decode()
 
 
-def run(mode, scheduled=False, force=False, dry_run=False):
-    """리포트를 만들어 전송한다. 반환: (성공 여부, 결과 메시지)"""
+def post_response_url(url, text, blocks=None, ephemeral=False):
+    """슬래시 커맨드의 response_url 로 게시한다 (기본: 채널 전체에 공개)."""
+    body = {"response_type": "ephemeral" if ephemeral else "in_channel", "text": text}
+    if blocks:
+        body["blocks"] = blocks
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.status, r.read().decode()
+
+
+def run(mode, scheduled=False, force=False, dry_run=False, response_url=None):
+    """리포트를 만들어 전송한다. 반환: (성공 여부, 결과 메시지)
+
+    response_url 이 있으면(슬래시 커맨드) 웹훅 대신 그 주소로 게시한다."""
     now = dt.datetime.now(sv.KST)
     label = None
     if scheduled and not force:
@@ -164,7 +176,7 @@ def run(mode, scheduled=False, force=False, dry_run=False):
     if dry_run:
         out = [text] + ["\n" + b["text"]["text"] for b in blocks if b["type"] == "section"]
         return True, "\n".join(out)
-    status, body = post(text, blocks)
+    status, body = post_response_url(response_url, text, blocks) if response_url else post(text, blocks)
     return status == 200, f"[{now:%F %T}] Slack 전송 {status} {body}"
 
 

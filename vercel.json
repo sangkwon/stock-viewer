@@ -1,9 +1,28 @@
 {
-  "regions": ["icn1"],
-  "functions": { "api/index.py": { "maxDuration": 60 } },
+  "regions": [
+    "icn1"
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
-    { "source": "/api/report", "destination": "/api/index?route=report" },
-    { "source": "/api/quotes", "destination": "/api/index?route=quotes" },
-    { "source": "/", "destination": "/api/index?route=home" }
+    {
+      "source": "/api/report",
+      "destination": "/api/index?route=report"
+    },
+    {
+      "source": "/api/quotes",
+      "destination": "/api/index?route=quotes"
+    },
+    {
+      "source": "/api/slack",
+      "destination": "/api/index?route=slack"
+    },
+    {
+      "source": "/",
+      "destination": "/api/index?route=home"
+    }
   ]
 }
