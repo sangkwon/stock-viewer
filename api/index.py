@@ -2,7 +2,7 @@
 
 환경변수 (Vercel 프로젝트 설정):
   DASH_TOKEN         대시보드 접근 토큰. 처음 한 번 https://<주소>/?key=<토큰> 으로 접속하면 쿠키가 저장된다.
-  CRON_SECRET        /api/report 호출용. 헤더 `Authorization: Bearer <값>` 이 맞아야 한다 (cron-job.org, 수동 Actions 실행이 사용).
+  CRON_SECRET        /api/report 호출용. 헤더 `Authorization: Bearer <값>` 또는 `X-Cron-Secret: <값>` 이 맞아야 한다 (cron-job.org, 수동 Actions 실행이 사용).
   KRX_ID, KRX_PW     KRX 로그인 (순매수 조회)
   SLACK_WEBHOOK_URL  Slack Incoming Webhook
   SLACK_SIGNING_SECRET  슬래시 커맨드(/report) 요청 서명 검증용 (Slack 앱 Basic Information)
@@ -85,7 +85,11 @@ class handler(BaseHTTPRequestHandler):
     def _report(self, q):
         secret = os.environ.get("CRON_SECRET")
         auth = self.headers.get("Authorization", "")
-        if not secret or not _same(auth, f"Bearer {secret}"):
+        alt = self.headers.get("X-Cron-Secret", "")  # Authorization 헤더를 못 쓰는 스케줄러용 대체 헤더
+        if not secret or not (_same(auth, f"Bearer {secret}") or _same(alt, secret)):
+            # 값은 남기지 않고 길이만 기록해 원인(헤더 미전달 / 값 불일치)을 가릴 수 있게 한다
+            print(f"[report 401] secret_set={bool(secret)} auth_len={len(auth)} x_cron_secret_len={len(alt)} "
+                  f"ua={self.headers.get('User-Agent', '')[:40]!r}", file=sys.stderr)
             return self._send(401, "unauthorized")
         mode = q.get("mode", [""])[0]
         if mode not in ("kr", "us"):

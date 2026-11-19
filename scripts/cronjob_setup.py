@@ -6,7 +6,7 @@
     python3 scripts/cronjob_setup.py --base-url ... --delete      # 이 스크립트가 만든 작업 삭제
 
 - CRONJOB_API_KEY: cron-job.org 콘솔 → Settings → API 에서 발급
-- CRON_SECRET: Vercel 환경변수 CRON_SECRET 과 같은 값. 요청 헤더 `Authorization: Bearer <값>` 로 전송된다.
+- CRON_SECRET: Vercel 환경변수 CRON_SECRET 과 같은 값. 요청 헤더 `Authorization: Bearer <값>` 과 `X-Cron-Secret: <값>` 로 전송된다.
 각 작업은 자기 시간대로 실행되므로 미국 서머타임을 따로 처리할 필요가 없다.
 """
 import argparse
@@ -36,7 +36,7 @@ def job_body(base_url, secret, title, mode, tz, hours, minutes):
         "enabled": True,
         "saveResponses": False,
         "requestMethod": 0,  # GET
-        "extendedData": {"headers": {"Authorization": f"Bearer {secret}"}},
+        "extendedData": {"headers": {"Authorization": f"Bearer {secret}", "X-Cron-Secret": secret}},
         "schedule": {"timezone": tz, "expiresAt": 0, "hours": hours, "mdays": [-1], "minutes": minutes,
                      "months": [-1], "wdays": WEEKDAYS},
     }}
