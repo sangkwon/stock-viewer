@@ -81,6 +81,9 @@ US_TICKERS = [
     ("MU", "마이크론"),
     ("GOOG", "알파벳 (GOOG)"),
 ]
+# 카드 클릭 시 새 창으로 여는 삼성증권 상세 페이지 (국내 종목/ETF, 국내 지수). 해외는 링크 없음.
+SAMSUNG_STOCK_URL = "https://www.samsungpop.com/mbw/trading/domesticStock.do?cmd=stockInfo&ItemCd={code}"
+SAMSUNG_INDEX_URL = "https://www.samsungpop.com/mbw/trading/domesticIndex.do?cmd=indexList"
 PORT = 8000
 REFRESH_SECONDS = 300  # 화면 자동 새로고침 주기 (초) — 5분
 INVESTOR_CACHE_SECONDS = 300  # KRX 조회는 5분간 캐시
@@ -191,7 +194,7 @@ def get_investors(code):
 def get_quote(item, investors=True):
     symbol, name = item
     code = symbol[:6]
-    out = {"code": code, "name": name}
+    out = {"code": code, "name": name, "url": SAMSUNG_STOCK_URL.format(code=code)}
     try:
         price, prev = get_price(symbol)
         out.update(price=price, prev_close=prev, change=price - prev,
@@ -207,7 +210,7 @@ def get_quote(item, investors=True):
 
 def get_market(item, investors=True):
     symbol, name, market = item
-    out = {"name": name}
+    out = {"name": name, "url": SAMSUNG_INDEX_URL}
     try:
         price, prev = get_price(symbol)
         out.update(price=price, prev_close=prev, change=price - prev,
@@ -252,13 +255,14 @@ def get_us(item, is_index):
     return out
 
 
-def get_all(parts=("kr", "us"), investors=True):
+def get_all(parts=("kr", "us"), investors=True, stock_investors=True):
     """parts: "kr" = 시장+관심 종목+글로벌 지표, "us" = 해외 지수+해외 종목. 요청하지 않은 항목은 빈 목록.
-    investors=False 이면 KRX(순매수) 조회를 건너뜁니다 (Slack 장중 리포트용)."""
+    investors=False 이면 KRX(순매수) 조회를 모두 건너뛰고, stock_investors=False 이면 개별 종목만 건너뜁니다
+    (시장 지수의 순매수는 유지). Slack 리포트는 지수 순매수만 보냅니다."""
     kr, us = "kr" in parts, "us" in parts
     with ThreadPoolExecutor(max_workers=4) as ex:
         markets = ex.map(lambda i: get_market(i, investors), MARKETS if kr else [])
-        stocks = ex.map(lambda i: get_quote(i, investors), TICKERS if kr else [])
+        stocks = ex.map(lambda i: get_quote(i, investors and stock_investors), TICKERS if kr else [])
         macros = ex.map(get_macro, MACROS if kr else [])
         us_idx = ex.map(lambda i: get_us(i, True), US_INDEXES if us else [])
         us_stocks = ex.map(lambda i: get_us(i, False), US_TICKERS if us else [])
@@ -294,6 +298,8 @@ h2{font-size:1rem;margin:0 0 10px;color:var(--sub);font-weight:600}
 .spark{width:100%;height:72px;margin-top:10px;display:block}
 .spark .ax{fill:var(--sub);font-size:9px}
 
+a.card{display:block;color:inherit;text-decoration:none}
+a.card:hover{box-shadow:0 2px 10px #0004}
 .err{color:var(--up)}
 </style></head><body>
 <h1>📈 주식 시세</h1><div id="meta">불러오는 중…</div>
@@ -349,11 +355,13 @@ function card(q){
     const cells=["외국인","기관","개인"].map(l=>`<div><small>${l}</small><b class="flat">-</b></div>`).join("");
     inv=`<div class="flow" title="${q.investors_error}">${cells}</div>`;
   }
-  return `<div class="card${q.code?"":" mkt"}">
+  const cls0=`card${q.code?"":" mkt"}`;
+  const open=q.url?`<a class="${cls0}" href="${q.url}" target="_blank" rel="noopener noreferrer" title="삼성증권에서 보기">`:`<div class="${cls0}">`;
+  return `${open}
     <div><span class="name">${q.name}</span><span class="code">${q.code||q.sub||""}</span></div>
     <div class="price ${cls(q.ratio)}">${q.prefix||""}${f(q.price)}${q.suffix||""}</div>
     <div class="chg ${cls(q.ratio)}">${arrow} ${f(Math.abs(q.change))}${q.suffix?"%p":""} (${sign(q.ratio)}${q.ratio.toFixed(2)}%)</div>
-    <div class="prev">전일 종가 ${f(q.prev_close)}</div>${spark(q)}${inv}</div>`;
+    <div class="prev">전일 종가 ${f(q.prev_close)}</div>${spark(q)}${inv}${q.url?"</a>":"</div>"}`;
 }
 async function load(){
   try{
