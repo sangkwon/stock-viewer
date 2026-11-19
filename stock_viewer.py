@@ -127,13 +127,18 @@ KST = ZoneInfo("Asia/Seoul")
 NY = ZoneInfo("America/New_York")
 
 
-def _fetch_intraday(symbol, macro, us=False):
+def _fetch_intraday(symbol, macro, us=False, long=False):
     if us:  # 미국 정규장 5분봉, x축은 (최근 거래일) 09:30~16:00 뉴욕시간 고정
         h = yf.Ticker(symbol).history(period="1d", interval="5m")["Close"].dropna()
         pts = [[int(t.timestamp()), round(float(v), 2)] for t, v in h.items()]
         if pts:
             d = dt.datetime.fromtimestamp(pts[-1][0], NY).replace(hour=9, minute=30, second=0, microsecond=0)
             domain = [int(d.timestamp()), int(d.timestamp()) + 390 * 60]
+    elif macro and long:  # 장기 추이: 최근 3개월 일봉, x축은 데이터 범위
+        h = yf.Ticker(symbol).history(period="3mo", interval="1d")["Close"].dropna()
+        pts = [[int(t.timestamp()), round(float(v), 4)] for t, v in h.items()]
+        if pts:
+            domain = [pts[0][0], pts[-1][0]]
     elif macro:
         h = yf.Ticker(symbol).history(period="2d", interval="15m")["Close"].dropna()
         pts = [[int(t.timestamp()), round(float(v), 4)] for t, v in h.items()]
@@ -151,14 +156,15 @@ def _fetch_intraday(symbol, macro, us=False):
     return pts, domain
 
 
-def get_intraday(symbol, macro=False, us=False):
+def get_intraday(symbol, macro=False, us=False, long=False):
     """장중 추이. 반환: (points, domain)
     points = [[epoch초, 가격], ...], domain = [x축 시작, x축 끝] (epoch초)
     - 국내(기본): 오늘 1분봉, x축은 09:00~15:30 고정
-    - macro: 최근 24시간 15분봉, x축은 데이터 범위
+    - macro: 최근 24시간 15분봉, x축은 데이터 범위 (long=True 이면 최근 3개월 일봉)
     """
     try:
-        return cached(("intra", symbol, macro, us), QUOTE_CACHE_SECONDS, lambda: _fetch_intraday(symbol, macro, us))
+        return cached(("intra", symbol, macro, us, long), QUOTE_CACHE_SECONDS,
+                      lambda: _fetch_intraday(symbol, macro, us, long))
     except Exception:
         return [], [0, 0]
 
@@ -228,7 +234,7 @@ def get_market(item, investors=True):
     return out
 
 
-def get_macro(item):
+def get_macro(item, long=False):
     symbol, name, unit, dec, suffix = item
     out = {"name": name, "sub": unit, "dec": dec, "suffix": suffix, "url": yahoo_url(symbol)}
     try:
@@ -238,8 +244,9 @@ def get_macro(item):
     except Exception as e:
         out["error"] = f"조회 실패: {e}"
         return out
-    out["intraday"], out["domain"] = get_intraday(symbol, macro=True)
+    out["intraday"], out["domain"] = get_intraday(symbol, macro=True, long=long)
     out["macro"] = True
+    out["long"] = long  # True: 3개월 일봉 차트
     return out
 
 
@@ -259,15 +266,16 @@ def get_us(item, is_index):
     return out
 
 
-def get_all(parts=("kr", "us"), investors=True, stock_investors=True):
+def get_all(parts=("kr", "us"), investors=True, stock_investors=True, macro_long=True):
     """parts: "kr" = 시장+관심 종목+글로벌 지표, "us" = 해외 지수+해외 종목. 요청하지 않은 항목은 빈 목록.
     investors=False 이면 KRX(순매수) 조회를 모두 건너뛰고, stock_investors=False 이면 개별 종목만 건너뜁니다
-    (시장 지수의 순매수는 유지). Slack 리포트는 지수 순매수만 보냅니다."""
+    (시장 지수의 순매수는 유지). Slack 리포트는 지수 순매수만 보냅니다.
+    macro_long=True 이면 글로벌 지표 차트가 3개월 일봉(뷰어), False 이면 최근 24시간(Slack 리포트)."""
     kr, us = "kr" in parts, "us" in parts
     with ThreadPoolExecutor(max_workers=4) as ex:
         markets = ex.map(lambda i: get_market(i, investors), MARKETS if kr else [])
         stocks = ex.map(lambda i: get_quote(i, investors and stock_investors), TICKERS if kr else [])
-        macros = ex.map(get_macro, MACROS if kr else [])
+        macros = ex.map(lambda i: get_macro(i, macro_long), MACROS if kr else [])
         us_idx = ex.map(lambda i: get_us(i, True), US_INDEXES if us else [])
         us_stocks = ex.map(lambda i: get_us(i, False), US_TICKERS if us else [])
         return {"markets": list(markets), "us_indexes": list(us_idx), "macros": list(macros),
@@ -320,26 +328,27 @@ const cls=n=>n>0?"up":n<0?"down":"flat";
 const eok=n=>sign(n)+(n/1e8).toLocaleString("ko-KR",{maximumFractionDigits:0})+"억";
 const md=d=>d?`${d.slice(4,6)}/${d.slice(6,8)}`:"";
 const kst=sec=>new Date(sec*1000).toLocaleString("sv-SE",{timeZone:"Asia/Seoul"}); // "2026-11-17 14:59:00"
-const hm=sec=>kst(sec).slice(11,16), mdhm=sec=>kst(sec).slice(5,16).replace("-","/");
+const hm=sec=>kst(sec).slice(11,16), mdhm=sec=>kst(sec).slice(5,16).replace("-","/"), md_=sec=>kst(sec).slice(5,10).replace("-","/");
 function spark(q,f){
   const pts=q.intraday||[], [d0,d1]=q.domain||[0,0];
   if(pts.length<2||d1<=d0)return `<div class="cap">추이 데이터 없음</div>`;
   const W=300,H=60,PT=4,PB=4;
-  const ys=pts.map(p=>p[1]).concat(q.prev_close);
+  const ref=q.long?pts[0][1]:q.prev_close; // 3개월 차트의 점선 기준은 3개월 전 값
+  const ys=pts.map(p=>p[1]).concat(ref);
   let lo=Math.min(...ys),hi=Math.max(...ys);if(hi===lo){hi+=1;lo-=1}
   const X=t=>(t-d0)/(d1-d0)*W, Y=v=>PT+(hi-v)/(hi-lo)*(H-PT-PB);
   const line=pts.map((p,i)=>`${i?"L":"M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("");
   const last=pts[pts.length-1], c=q.ratio>0?"var(--up)":q.ratio<0?"var(--down)":"var(--sub)";
   const area=`${line}L${X(last[0]).toFixed(1)},${H}L${X(pts[0][0]).toFixed(1)},${H}Z`;
-  const py=Y(q.prev_close).toFixed(1);
-  const L=q.macro?mdhm:hm; // 글로벌 지표는 날짜도 표시
+  const py=Y(ref).toFixed(1);
+  const L=q.long?md_:q.macro?mdhm:hm; // 3개월 차트는 날짜만, 24시간 지표는 날짜+시각
   return `<svg class="spark" viewBox="0 0 ${W} ${H+12}" preserveAspectRatio="none">
     <path d="${area}" fill="${c}" opacity=".12"/>
     <line x1="0" x2="${W}" y1="${py}" y2="${py}" stroke="var(--sub)" stroke-width=".6" stroke-dasharray="3 3"/>
     <path d="${line}" fill="none" stroke="${c}" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
     <circle cx="${X(last[0]).toFixed(1)}" cy="${Y(last[1]).toFixed(1)}" r="2.2" fill="${c}"/>
     <text class="ax" x="0" y="${H+10}">${L(d0)}</text>
-    <text class="ax" x="${W/2}" y="${H+10}" text-anchor="middle">- - 전일 종가 · 최근 ${L(last[0])}</text>
+    <text class="ax" x="${W/2}" y="${H+10}" text-anchor="middle">- - ${q.long?"3개월 전":"전일 종가"} · 최근 ${L(last[0])}</text>
     <text class="ax" x="${W}" y="${H+10}" text-anchor="end">${L(d1)}</text></svg>`;
 }
 function card(q){

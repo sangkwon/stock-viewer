@@ -178,7 +178,7 @@ def run(mode, scheduled=False, force=False, dry_run=False, response_url=None):
     parts = ("kr",) if mode == "kr" else ("us",) if mode == "us" else ("kr", "us")
     with contextlib.redirect_stdout(io.StringIO()):  # 라이브러리 로그 숨김
         # 순매수(KRX)는 국내 리포트의 시장 지수(KOSPI/KOSDAQ)에만 넣고, 개별 종목은 뺀다
-        data = sv.get_all(parts, investors=(mode != "us"), stock_investors=False)
+        data = sv.get_all(parts, investors=(mode != "us"), stock_investors=False, macro_long=False)  # Slack은 지표를 최근 24시간 차트로
     if not force:
         max_age = SCHEDULED_MAX_AGE if scheduled else MANUAL_MAX_AGE
         reason = stale_reason(mode, data, now, max_age)
