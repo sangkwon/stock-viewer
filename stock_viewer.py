@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import time
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,9 +82,8 @@ US_TICKERS = [
     ("MU", "마이크론"),
     ("GOOG", "알파벳 (GOOG)"),
 ]
-# 카드 클릭 시 새 창으로 여는 삼성증권 상세 페이지 (국내 종목/ETF, 국내 지수). 해외는 링크 없음.
-SAMSUNG_STOCK_URL = "https://www.samsungpop.com/mbw/trading/domesticStock.do?cmd=stockInfo&ItemCd={code}"
-SAMSUNG_INDEX_URL = "https://www.samsungpop.com/mbw/trading/domesticIndex.do?cmd=indexList"
+# 카드 클릭 시 새 창으로 여는 야후 파이낸스 시세 페이지 (모든 카드 공통, 위 목록의 야후 심볼 사용)
+YAHOO_URL = "https://finance.yahoo.com/quote/{symbol}"
 PORT = 8000
 REFRESH_SECONDS = 300  # 화면 자동 새로고침 주기 (초) — 5분
 INVESTOR_CACHE_SECONDS = 300  # KRX 조회는 5분간 캐시
@@ -191,10 +191,14 @@ def get_investors(code):
     return result
 
 
+def yahoo_url(symbol):
+    return YAHOO_URL.format(symbol=quote(symbol, safe=""))  # ^KS11 → %5EKS11, GC=F → GC%3DF
+
+
 def get_quote(item, investors=True):
     symbol, name = item
     code = symbol[:6]
-    out = {"code": code, "name": name, "url": SAMSUNG_STOCK_URL.format(code=code)}
+    out = {"code": code, "name": name, "url": yahoo_url(symbol)}
     try:
         price, prev = get_price(symbol)
         out.update(price=price, prev_close=prev, change=price - prev,
@@ -210,7 +214,7 @@ def get_quote(item, investors=True):
 
 def get_market(item, investors=True):
     symbol, name, market = item
-    out = {"name": name, "url": SAMSUNG_INDEX_URL}
+    out = {"name": name, "url": yahoo_url(symbol)}
     try:
         price, prev = get_price(symbol)
         out.update(price=price, prev_close=prev, change=price - prev,
@@ -226,7 +230,7 @@ def get_market(item, investors=True):
 
 def get_macro(item):
     symbol, name, unit, dec, suffix = item
-    out = {"name": name, "sub": unit, "dec": dec, "suffix": suffix}
+    out = {"name": name, "sub": unit, "dec": dec, "suffix": suffix, "url": yahoo_url(symbol)}
     try:
         price, prev = get_price(symbol)
         out.update(price=price, prev_close=prev, change=price - prev,
@@ -242,7 +246,7 @@ def get_macro(item):
 def get_us(item, is_index):
     symbol, name = item[0], item[1]
     out = {"name": name, "sub": item[2] if is_index else symbol, "dec": 2,
-           "prefix": "" if is_index else "$"}
+           "prefix": "" if is_index else "$", "url": yahoo_url(symbol)}
     try:
         price, prev = get_price(symbol)
         out.update(price=price, prev_close=prev, change=price - prev,
@@ -356,7 +360,7 @@ function card(q){
     inv=`<div class="flow" title="${q.investors_error}">${cells}</div>`;
   }
   const cls0=`card${q.code?"":" mkt"}`;
-  const open=q.url?`<a class="${cls0}" href="${q.url}" target="_blank" rel="noopener noreferrer" title="삼성증권에서 보기">`:`<div class="${cls0}">`;
+  const open=q.url?`<a class="${cls0}" href="${q.url}" target="_blank" rel="noopener noreferrer" title="야후 파이낸스에서 보기">`:`<div class="${cls0}">`;
   return `${open}
     <div><span class="name">${q.name}</span><span class="code">${q.code||q.sub||""}</span></div>
     <div class="price ${cls(q.ratio)}">${q.prefix||""}${f(q.price)}${q.suffix||""}</div>
