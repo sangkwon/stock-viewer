@@ -2,7 +2,7 @@
 
 환경변수 (Vercel 프로젝트 설정):
   DASH_TOKEN         대시보드 접근 토큰. 처음 한 번 https://<주소>/?key=<토큰> 으로 접속하면 쿠키가 저장된다.
-  CRON_SECRET        /api/report 호출용. 헤더 `Authorization: Bearer <값>` 이 맞아야 한다 (GitHub Actions가 사용).
+  CRON_SECRET        /api/report 호출용. 헤더 `Authorization: Bearer <값>` 이 맞아야 한다 (cron-job.org, 수동 Actions 실행이 사용).
   KRX_ID, KRX_PW     KRX 로그인 (순매수 조회)
   SLACK_WEBHOOK_URL  Slack Incoming Webhook
   SLACK_SIGNING_SECRET  슬래시 커맨드(/report) 요청 서명 검증용 (Slack 앱 Basic Information)
@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -89,9 +90,25 @@ class handler(BaseHTTPRequestHandler):
         mode = q.get("mode", [""])[0]
         if mode not in ("kr", "us"):
             return self._send(400, "mode 는 kr 또는 us")
-        import slack_report
+        force = q.get("force", [""])[0] == "1"
+        if q.get("wait", [""])[0] != "1":
+            # 외부 스케줄러(cron-job.org)의 응답 대기 제한을 피하려고 먼저 접수 응답을 보내고, 이어서 리포트를 만들어 전송한다.
+            # 결과는 Vercel 로그에 남는다. (?wait=1 이면 끝날 때까지 기다렸다가 결과를 응답으로 돌려줌)
+            self._send(202, "accepted")
+            try:
+                self.wfile.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                import slack_report  # 무거운 import(pandas 등)는 접수 응답을 보낸 뒤에
+                ok, msg = slack_report.run(mode, scheduled=True, force=force)
+                print(f"[report {mode}] ok={ok} {msg}", file=sys.stderr)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+            return
         try:
-            ok, msg = slack_report.run(mode, scheduled=True, force=q.get("force", [""])[0] == "1")
+            import slack_report
+            ok, msg = slack_report.run(mode, scheduled=True, force=force)
         except Exception as e:  # noqa: BLE001
             return self._send(500, f"{type(e).__name__}: {e}")
         return self._send(200 if ok else 502, msg)

@@ -4,12 +4,12 @@
 Vercel(서울 리전)에 배포해 운영하고, 로컬에서도 그대로 실행할 수 있습니다.
 
 - **웹 대시보드**: 시장 지수, 해외 지수, 글로벌 지표(금·유가·환율·미국채 10년물), 관심 종목, 해외 종목의 현재가·전일 대비·장중 그래프, 국내 시장·종목의 외국인/기관/개인 순매수. 5분마다 자동 갱신.
-- **Slack 리포트**: 같은 데이터를 Slack 웹훅으로 전송. GitHub Actions가 정해진 시각에 Vercel의 `/api/report`를 호출합니다. (국내 리포트에는 순매수 줄이 `외국인 / 기관 / 개인` 순서로 포함됩니다. 장중에는 오늘 값이 확정되지 않아, 전 거래일 값이면 줄 끝에 `(전일)`이 붙습니다)
+- **Slack 리포트**: 같은 데이터를 Slack 웹훅으로 전송. [cron-job.org](https://cron-job.org)가 정해진 시각에 Vercel의 `/api/report`를 호출합니다. (국내 리포트에는 순매수 줄이 `외국인 / 기관 / 개인` 순서로 포함됩니다. 장중에는 오늘 값이 확정되지 않아, 전 거래일 값이면 줄 끝에 `(전일)`이 붙습니다)
 
 ## 구조
 
 ```
-GitHub Actions (cron, UTC)  ──HTTP──▶  Vercel 함수 (api/index.py, 서울 리전)  ──▶  Slack 웹훅
+cron-job.org (시간대별 예약) ──HTTP──▶  Vercel 함수 (api/index.py, 서울 리전)  ──▶  Slack 웹훅
                                           ├─ /                대시보드 (토큰 쿠키 인증)
                                           ├─ /api/quotes      시세 JSON (같은 인증)
                                           ├─ /api/report      Slack 전송 (Bearer CRON_SECRET)
@@ -25,7 +25,7 @@ GitHub Actions (cron, UTC)  ──HTTP──▶  Vercel 함수 (api/index.py, �
 | `vercel.json`, `pyproject.toml` | Vercel 설정 (서울 리전 `icn1`, 최대 60초, 경로 rewrite, Python 진입점) |
 | `.github/workflows/report.yml` | Slack 리포트 예약 실행 |
 
-Vercel Hobby 플랜의 Cron은 하루 1회까지라 GitHub Actions를 트리거로 씁니다. 서울 리전을 쓰는 이유는 KRX·야후가 해외 IP에서 막힐 수 있어서입니다.
+Vercel Hobby 플랜의 Cron은 하루 1회까지이고, GitHub Actions의 `schedule`은 실제로 수 시간 지연되거나 누락되어서(2026-11-19 확인) 외부 스케줄러 cron-job.org를 씁니다. 서울 리전을 쓰는 이유는 KRX·야후가 해외 IP에서 막힐 수 있어서입니다.
 
 ## 데이터 출처
 
@@ -38,7 +38,7 @@ Vercel Hobby 플랜의 Cron은 하루 1회까지라 GitHub Actions를 트리거�
 
 코드와 저장소에는 비밀값이 없습니다. 실행 환경에 따라 저장 위치가 다릅니다.
 
-| 값 | Vercel (운영) | 로컬 (macOS 키체인) | GitHub Actions |
+| 값 | Vercel (운영) | 로컬 (macOS 키체인) | GitHub (수동 실행용) / cron-job.org |
 |---|---|---|---|
 | KRX 로그인 ID | 환경변수 `KRX_ID` | 서비스 `krx-pw`의 **계정(`-a`)** | – |
 | KRX 비밀번호 | 환경변수 `KRX_PW` | 서비스 `krx-pw`의 비밀번호 | – |
@@ -46,7 +46,7 @@ Vercel Hobby 플랜의 Cron은 하루 1회까지라 GitHub Actions를 트리거�
 | 대시보드 접속 토큰 | 환경변수 `DASH_TOKEN` | (로컬 서버는 인증 없음) | – |
 | 슬래시 커맨드 서명 검증 | 환경변수 `SLACK_SIGNING_SECRET` | – | – |
 | (선택) 허용 사용자/채널 | 환경변수 `SLACK_ALLOWED_USER_ID`, `SLACK_ALLOWED_CHANNEL_ID` | – | – |
-| 리포트 호출 시크릿 | 환경변수 `CRON_SECRET` | – | Secret `CRON_SECRET` (같은 값) |
+| 리포트 호출 시크릿 | 환경변수 `CRON_SECRET` | – | GitHub Secret `CRON_SECRET`, cron-job.org 작업의 `Authorization: Bearer` 헤더 (모두 같은 값) |
 | 배포 주소 | – | – | Variable `REPORT_BASE_URL` (비밀 아님) |
 
 코드는 환경변수가 있으면 그것을, 없으면 키체인을 읽습니다. 토큰·시크릿이 설정되지 않은 Vercel 경로는 열리지 않습니다(fail closed).
@@ -61,7 +61,7 @@ security find-generic-password -s krx-pw | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/
 security find-generic-password -s krx-pw -w | tr -d '\n' | vercel env add KRX_PW production --sensitive
 security find-generic-password -s slack-webhook-url -w | tr -d '\n' | vercel env add SLACK_WEBHOOK_URL production --sensitive
 
-# 같은 값을 Vercel과 GitHub에 넣어야 하는 CRON_SECRET
+# 같은 값을 Vercel·GitHub·cron-job.org에 넣어야 하는 CRON_SECRET (아래 "Slack 리포트 일정"의 스크립트가 cron-job.org에 넣어 줌)
 CRON=$(openssl rand -hex 24)
 printf '%s' "$CRON" | vercel env add CRON_SECRET production --sensitive
 printf '%s' "$CRON" | gh secret set CRON_SECRET
@@ -122,16 +122,35 @@ security delete-generic-password -s krx-pw
 
 ## Slack 리포트 일정
 
-`.github/workflows/report.yml` (GitHub Actions는 UTC 기준, 수 분 지연되거나 드물게 누락·중복될 수 있음)
+[cron-job.org](https://cron-job.org)의 작업 4개가 각자 시간대(`Asia/Seoul`, `America/New_York`)로 실행합니다. 서머타임은 스케줄러가 처리합니다.
 
 | 리포트 | 시각 | 비고 |
 |---|---|---|
 | 국내 | 월~금 KST 09:30, 11:30, 13:30, 15:00 | 오늘 국내 데이터가 없으면(휴장일) 전송 생략 |
-| 미국 | 장 시작 30분 후(10:00 ET), 마감 30분 전(15:30 ET) | 서머타임/표준시 UTC가 달라 둘 다 호출하고, 서버가 뉴욕 시각을 보고 맞는 쪽만 전송 |
+| 미국 | 장 시작 30분 후(10:00 ET), 마감 30분 전(15:30 ET) | 서버가 뉴욕 시각이 발송 시간대인지 한 번 더 확인하고, 휴장일은 데이터로 거름 |
 
 미국은 마지막 장중 데이터가 90분 이내여야 전송하므로 휴장일·조기 폐장일은 자동으로 건너뜁니다. 한국 종목은 야후 시세가 지연되므로 09:30 리포트는 장 초반 값입니다.
 
-수동 실행: GitHub → Actions → *Slack report* → **Run workflow** (`mode`: kr/us, `force`: true면 시간대·휴장 판단 무시).
+`/api/report`는 요청을 받으면 먼저 `202 accepted`로 응답하고 뒤에서 리포트를 만들어 보냅니다(스케줄러의 응답 대기 제한 회피). 결과는 Vercel 로그에 남고, 끝까지 기다려 결과를 보려면 `&wait=1`을 붙입니다.
+
+### cron-job.org 작업 등록
+
+1. [cron-job.org](https://cron-job.org) 가입 → 콘솔 **Settings → API**에서 API 키 발급
+2. 터미널에서 (키와 시크릿은 프롬프트로 입력해 히스토리에 남기지 않기)
+
+```bash
+read -s "CRONJOB_API_KEY?cron-job.org API 키: "; export CRONJOB_API_KEY
+read -s "CRON_SECRET?CRON_SECRET: "; export CRON_SECRET     # Vercel에 등록한 값과 같아야 함
+python3 scripts/cronjob_setup.py --base-url https://<프로젝트>.vercel.app
+unset CRONJOB_API_KEY CRON_SECRET
+```
+
+   - `--dry-run`: 보낼 내용만 출력, `--delete`: 이 스크립트가 만든 작업(제목이 `stock-viewer `로 시작) 삭제. 다시 실행하면 같은 제목의 작업은 갱신됩니다.
+   - 만들어지는 작업: 국내 09:30/11:30/13:30(KST), 국내 15:00(KST), 미국 10:00(ET), 미국 15:30(ET) — 모두 월~금, GET, `Authorization: Bearer <CRON_SECRET>` 헤더
+3. cron-job.org 콘솔에서 작업별 실행 기록(성공 여부)을 볼 수 있습니다.
+
+### 수동 실행
+Slack에서 `/report`, 또는 GitHub → Actions → *Slack report* → **Run workflow** (`mode`: kr/us, `force`: true면 시간대·휴장 판단 무시).
 
 ## 새로 배포하기
 
@@ -146,7 +165,7 @@ vercel deploy --prod --yes
 - `vercel link`는 이 GitHub 저장소를 프로젝트에 연결할 수 있으며, 연결되면 `main`에 push할 때마다 자동 배포됩니다.
 - Python 런타임은 `pyproject.toml`의 `[tool.vercel] entrypoint`가 필요합니다.
 - Vercel rewrite 이후에는 함수가 보는 경로가 `/api/index`가 되므로, 원래 경로는 `vercel.json`이 `?route=` 로 넘겨줍니다.
-- 이후 GitHub Secret/Variable(`CRON_SECRET`, `REPORT_BASE_URL`)을 설정합니다.
+- 이후 cron-job.org 작업을 등록하고(위 "Slack 리포트 일정"), 수동 실행용 GitHub Secret/Variable(`CRON_SECRET`, `REPORT_BASE_URL`)을 설정합니다.
 
 ## 로컬 실행
 
@@ -191,10 +210,10 @@ cd stock-viewer
 | 증상 | 원인과 해결 |
 |---|---|
 | 대시보드에 "접근 권한이 없습니다" | 쿠키가 없습니다. `/?key=<DASH_TOKEN>` 으로 접속하세요. 토큰을 바꿨다면 재배포가 필요합니다. |
-| Actions 실행이 401로 실패 | Vercel `CRON_SECRET`과 GitHub Secret 값이 다르거나, 값을 바꾼 뒤 재배포하지 않았습니다. |
-| `/report`가 `operation_timeout` 오류 | 함수가 응답을 늦게 보내는 경우입니다(리포트는 올 수 있음). 이 경우 GitHub Actions `workflow_dispatch`로 호출하는 방식으로 바꿔야 합니다. |
+| 리포트 호출이 401 | Vercel `CRON_SECRET`과 cron-job.org 헤더(또는 GitHub Secret) 값이 다르거나, 값을 바꾼 뒤 재배포하지 않았습니다. |
+| 예약 시각에 리포트가 안 옴 | cron-job.org 콘솔의 실행 기록(응답 코드)과 Vercel 로그(`[report kr]` 줄)를 확인하세요. 응답 `202`인데 Slack에 안 오면 "전송 생략" 사유가 로그에 있습니다. |
 | `/report`가 `invalid signature` 또는 응답 없음 | `SLACK_SIGNING_SECRET` 값이 틀렸거나 등록 후 재배포하지 않았습니다. |
-| Actions는 성공인데 Slack에 안 옴 | 응답이 "전송 생략"(휴장일·발송 시간대 아님)일 수 있습니다. Actions 실행 로그를 확인하세요. |
+| 수동 Actions 실행은 성공인데 Slack에 안 옴 | 응답이 "전송 생략"(휴장일·발송 시간대 아님)일 수 있습니다. 실행 로그를 확인하세요. |
 | 순매수가 `-` 이거나 비어 있음 | KRX 로그인 실패(환경변수/키체인 확인) 또는 ETF처럼 pykrx가 지원하지 않는 종목입니다. |
 | 시세 카드가 가끔 오류로 표시 | 야후 응답 누락/제한입니다. 1회 재시도와 직전 값 사용으로 완화되어 있습니다. |
 | 로컬 `Address already in use` | 포트 8000 사용 중. `pkill -f stock_viewer.py` 후 다시 실행하세요. |

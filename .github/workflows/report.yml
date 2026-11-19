@@ -1,6 +1,5 @@
-# 정해진 시각에 Vercel의 /api/report 를 호출해 Slack 리포트를 보낸다.
-# (Vercel Hobby 플랜의 Cron은 하루 1회까지라 GitHub Actions를 트리거로 사용)
-# GitHub Actions는 UTC 기준이며 수 분 지연되거나 드물게 누락될 수 있다.
+# 수동 실행 전용: Vercel의 /api/report 를 호출해 Slack 리포트를 한 번 보낸다. (Actions → Slack report → Run workflow)
+# 예약 실행은 GitHub Actions의 schedule 이 수 시간 지연되거나 누락되어 cron-job.org 로 옮겼다 (scripts/cronjob_setup.py).
 #
 # 필요 설정 (저장소 Settings → Secrets and variables → Actions):
 #   Secret   CRON_SECRET       Vercel 환경변수 CRON_SECRET 과 같은 값
@@ -8,18 +7,6 @@
 name: Slack report
 
 on:
-  schedule:
-    # 국내 (월~금, KST 09:30 / 11:30 / 13:30 / 15:00)
-    - cron: "30 0 * * 1-5"
-    - cron: "30 2 * * 1-5"
-    - cron: "30 4 * * 1-5"
-    - cron: "0 6 * * 1-5"
-    # 미국: 장 시작 30분 후(10:00 ET), 마감 30분 전(15:30 ET)
-    # 서머타임/표준시에 따라 UTC가 1시간 달라지므로 둘 다 호출하고, 서버가 뉴욕 시각을 보고 맞는 쪽만 전송한다.
-    - cron: "0 14 * * 1-5"
-    - cron: "0 15 * * 1-5"
-    - cron: "30 19 * * 1-5"
-    - cron: "30 20 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
@@ -39,19 +26,11 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           BASE_URL: ${{ vars.REPORT_BASE_URL }}
-          SCHEDULE: ${{ github.event.schedule }}
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_FORCE: ${{ inputs.force }}
         run: |
-          if [ -n "$INPUT_MODE" ]; then
-            MODE="$INPUT_MODE"
-          else
-            case "$SCHEDULE" in
-              "30 0 * * 1-5"|"30 2 * * 1-5"|"30 4 * * 1-5"|"0 6 * * 1-5") MODE=kr ;;
-              *) MODE=us ;;
-            esac
-          fi
           FORCE=""
           [ "$INPUT_FORCE" = "true" ] && FORCE="&force=1"
-          curl -fsS --max-time 120 -H "Authorization: Bearer $CRON_SECRET" "$BASE_URL/api/report?mode=$MODE$FORCE"
+          # wait=1: 리포트가 끝날 때까지 기다렸다가 결과를 로그에 남긴다
+          curl -fsS --max-time 120 -H "Authorization: Bearer $CRON_SECRET" "$BASE_URL/api/report?mode=$INPUT_MODE&wait=1$FORCE"
           echo
