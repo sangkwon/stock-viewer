@@ -21,6 +21,10 @@
       "destination": "/api/index?route=plain"
     },
     {
+      "source": "/robots.txt",
+      "destination": "/api/index?route=robots"
+    },
+    {
       "source": "/api/slack",
       "destination": "/api/index?route=slack"
     },

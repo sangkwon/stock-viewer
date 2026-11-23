@@ -63,6 +63,10 @@ class handler(BaseHTTPRequestHandler):
             return self._report(q)
         if route in ("plain", "/api/plain"):
             return self._plain()  # 공개: 야후 공개 시세 숫자만 (순매수·대시보드는 아래 인증 유지)
+        if route in ("robots", "/robots.txt"):
+            # 모든 경로가 이 함수로 오므로 robots.txt 도 직접 응답해야 한다. 인증·무거운 import
+            # 앞에 두어 콜드 스타트에도 바로 답한다 (읽지 못하면 /api/plain 요청이 거부된다).
+            return self._send(200, "User-agent: *\nAllow: /api/plain\nDisallow: /\n")
 
         token = os.environ.get("DASH_TOKEN")
         if not token:
