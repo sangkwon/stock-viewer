@@ -17,6 +17,10 @@
       "destination": "/api/index?route=quotes"
     },
     {
+      "source": "/api/plain",
+      "destination": "/api/index?route=plain"
+    },
+    {
       "source": "/api/slack",
       "destination": "/api/index?route=slack"
     },
