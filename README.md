@@ -12,6 +12,7 @@ Vercel(서울 리전)에 배포해 운영하고, 로컬에서도 그대로 실�
 cron-job.org (시간대별 예약) ──HTTP──▶  Vercel 함수 (api/index.py, 서울 리전)  ──▶  Slack 웹훅
                                           ├─ /                대시보드 (토큰 쿠키 인증)
                                           ├─ /api/quotes      시세 JSON (같은 인증)
+                                          ├─ /api/plain       시세 text/plain (인증 없음, 순매수 제외)
                                           ├─ /api/report      Slack 전송 (Bearer CRON_SECRET)
                                           └─ /api/slack       Slack 슬래시 커맨드 /report (서명 검증)
                                        yfinance(야후) · pykrx(KRX 로그인) 로 데이터 조회
@@ -99,6 +100,31 @@ security delete-generic-password -s krx-pw
 4. 생성된 URL을 위 방법으로 저장
 
 웹훅 URL은 비밀번호처럼 다루세요. 유출되면 Slack 앱 설정에서 폐기하고 새로 만든 뒤 값을 교체하세요.
+
+## `/api/plain` — 스크립트·AI 에이전트용 평문 시세
+
+`https://<프로젝트>.vercel.app/api/plain` 은 **인증 없이** 열리고, 한 줄에 한 종목씩 파이프로 구분한 고정 포맷을 돌려줍니다. 쿠키를 들고 다닐 수 없는 도구(예: AI 에이전트의 웹 페이지 읽기)가 시세를 그대로 읽어 쓰려고 만든 경로입니다.
+
+```
+AS_OF 2026-11-23T15:04:11+0900 Asia/Seoul
+SOURCE yahoo-finance(yfinance); KR quotes may lag 15-20min; low/high derived from 1m closes
+FIELDS section|name|price|change|ratio_pct|prev_close|low|high|data_at_kst|age_sec|state
+
+KR_INDEX|KOSPI|4,711.71|-158.25|-3.25|4,869.96|4,586.80|4,741.54|2026-11-23T15:00|240|OPEN
+KR_STOCK|삼성전자|176,500|-4,400|-2.43|180,900|171,500|178,500|2026-11-23T15:00|240|OPEN
+US_STOCK|엔비디아|125.53|-20.45|-14.01|145.98|124.10|140.22|2026-11-21T06:00|119000|CLOSED
+```
+
+- `section`: `KR_INDEX` / `KR_STOCK` / `US_INDEX` / `US_STOCK` / `MACRO`
+- `data_at_kst`, `age_sec`: 장중 데이터의 마지막 시각(한국시간)과 그 경과 초. **야후 지연이 그대로 드러나므로 읽는 쪽이 시각을 추측할 필요가 없습니다.**
+- `state`: 국내는 평일 09:00~15:40 + 오늘 데이터면 `OPEN`, 해외는 마지막 데이터가 90분 이내면 `OPEN`. 그래서 휴장일·조기 폐장이 자동으로 `CLOSED`로 나옵니다. 데이터가 없으면 `NODATA`, 조회 실패한 줄은 `section|이름|ERROR|사유`.
+- `low`/`high`: 1분봉 **종가**들의 최저·최고라 실제 장중 저가·고가와 몇 호가 차이가 날 수 있습니다.
+- 임의 쿼리(`?t=...`)는 무시합니다. 호출 측이 캐시를 우회할 때 쓰세요.
+- `/robots.txt` 도 이 함수가 직접 응답합니다 (`/api/plain` 만 Allow). 모든 경로가 함수 하나로 오기 때문에
+  robots.txt 가 없으면 크롤러·에이전트가 `/api/plain` 요청 자체를 거부합니다.
+- 순매수(KRX)는 포함하지 않습니다. 장중에는 전일 값이고, KRX 로그인을 건너뛰어 응답을 빠르게 하려는 의도입니다.
+
+비밀값이 없고 내용이 공개 시세뿐이라 토큰을 두지 않았습니다. 주소가 알려지면 누구나 호출할 수 있다는 점(Vercel 함수 호출량)만 감안하세요. 막으려면 이 라우트를 `DASH_TOKEN` 검사 뒤로 옮기면 됩니다.
 
 ## 대시보드 접속
 

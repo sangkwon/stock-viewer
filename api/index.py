@@ -7,7 +7,7 @@
   SLACK_WEBHOOK_URL  Slack Incoming Webhook
   SLACK_SIGNING_SECRET  슬래시 커맨드(/report) 요청 서명 검증용 (Slack 앱 Basic Information)
   SLACK_ALLOWED_USER_ID, SLACK_ALLOWED_CHANNEL_ID  (선택) 지정하면 해당 사용자/채널의 커맨드만 허용
-토큰/시크릿이 설정되지 않으면 해당 경로는 열리지 않는다 (fail closed).
+토큰/시크릿이 설정되지 않으면 해당 경로는 열리지 않는다 (fail closed).\n예외: /api/plain 은 인증 없이 열린다. 야후 공개 시세 숫자만 반환하고 순매수(KRX)·비밀값은 포함하지 않는다.
 """
 import contextlib
 import hashlib
@@ -61,6 +61,12 @@ class handler(BaseHTTPRequestHandler):
         route = q.get("route", [""])[0] or u.path
         if route in ("report", "/api/report"):
             return self._report(q)
+        if route in ("plain", "/api/plain"):
+            return self._plain()  # 공개: 야후 공개 시세 숫자만 (순매수·대시보드는 아래 인증 유지)
+        if route in ("robots", "/robots.txt"):
+            # 모든 경로가 이 함수로 오므로 robots.txt 도 직접 응답해야 한다. 인증·무거운 import
+            # 앞에 두어 콜드 스타트에도 바로 답한다 (읽지 못하면 /api/plain 요청이 거부된다).
+            return self._send(200, "User-agent: *\nAllow: /api/plain\nDisallow: /\n")
 
         token = os.environ.get("DASH_TOKEN")
         if not token:
@@ -81,6 +87,60 @@ class handler(BaseHTTPRequestHandler):
         if route in ("home", "/", "/index.html", "/api/index"):
             return self._send(200, sv.PAGE.replace("__REFRESH__", str(sv.REFRESH_SECONDS)), "text/html")
         return self._send(404, "not found")
+
+    def _plain(self):
+        """에이전트/스크립트가 읽는 고정 포맷 text/plain. 인증 없음 (야후 공개 시세만, 순매수 제외).
+
+        한 줄 = 한 종목, 파이프 구분. state 는 장중 데이터의 마지막 시각으로 판정한다.
+        ?t= 등 임의 쿼리는 무시한다 (호출 측 캐시 우회용).
+        """
+        import datetime as dt
+        with contextlib.redirect_stdout(io.StringIO()):  # pykrx import/로그인 로그 숨김
+            import stock_viewer as sv
+            data = sv.get_all(parts=("kr", "us"), investors=False,
+                              stock_investors=False, macro_long=False)
+        now = dt.datetime.now(sv.KST)
+        hhmm = now.strftime("%H:%M")
+        out = [
+            f"AS_OF {now:%Y-%m-%dT%H:%M:%S%z} Asia/Seoul",
+            "SOURCE yahoo-finance(yfinance); KR quotes may lag 15-20min; low/high derived from 1m closes",
+            "FIELDS section|name|price|change|ratio_pct|prev_close|low|high|data_at_kst|age_sec|state",
+            "",
+        ]
+
+        def row(section, q, dec, us=False):
+            name = q.get("name", "")
+            if q.get("error") or "price" not in q:
+                return f"{section}|{name}|ERROR|{str(q.get('error', 'no price'))[:80]}"
+            pts = q.get("intraday") or []
+            vals = [v for _, v in pts]
+            ts = pts[-1][0] if pts else 0
+            age = int(now.timestamp() - ts) if ts else -1
+            at = dt.datetime.fromtimestamp(ts, sv.KST).strftime("%Y-%m-%dT%H:%M") if ts else "-"
+            if not ts:
+                state = "NODATA"
+            elif us:  # 미국: 마지막 데이터가 90분 이내면 장중으로 본다 (휴장·조기폐장 자동 반영)
+                state = "OPEN" if age <= 5400 else "CLOSED"
+            else:     # 국내: 평일 09:00~15:40 이고 오늘 데이터여야 장중
+                today = dt.datetime.fromtimestamp(ts, sv.KST).date() == now.date()
+                state = "OPEN" if (today and now.weekday() < 5 and "09:00" <= hhmm <= "15:40") else "CLOSED"
+            n = lambda v: f"{v:,.{dec}f}"
+            return "|".join([section, name, n(q["price"]), f"{q['change']:+,.{dec}f}",
+                             f"{q['ratio']:+.2f}", n(q["prev_close"]),
+                             n(min(vals)) if vals else "-", n(max(vals)) if vals else "-",
+                             at, str(age), state])
+
+        for q in data["markets"]:
+            out.append(row("KR_INDEX", q, 2))
+        for q in data["stocks"]:
+            out.append(row("KR_STOCK", q, 0))
+        for q in data["us_indexes"]:
+            out.append(row("US_INDEX", q, 2, us=True))
+        for q in data["us_stocks"]:
+            out.append(row("US_STOCK", q, 2, us=True))
+        for q in data["macros"]:
+            out.append(row("MACRO", q, q.get("dec", 2)))
+        return self._send(200, "\n".join(out) + "\n")
 
     def _report(self, q):
         secret = os.environ.get("CRON_SECRET")
