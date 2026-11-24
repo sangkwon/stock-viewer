@@ -19,7 +19,16 @@ from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 콜드 스타트 비용 줄이기 (Vercel 람다는 /tmp 만 쓰기 가능).
+# MPLCONFIGDIR 가 없으면 matplotlib 이 import 될 때마다 폰트 캐시를 다시 만든다("generated new fontManager").
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 import yfinance as yf
+
+try:  # 없으면 매 호출마다 TzCache/CookieCache 생성 실패 로그와 함께 재조회가 일어난다
+    yf.set_tz_cache_location("/tmp/py-yfinance")
+except Exception:
+    pass
 
 # 키체인 항목: 서비스명 = KEYCHAIN_SERVICE, 계정(account) = KRX 로그인 ID, 암호 = KRX 비밀번호
 KEYCHAIN_SERVICE = "krx-pw"
@@ -42,7 +51,7 @@ def load_krx_credentials():
 
 
 HAS_KRX_LOGIN = load_krx_credentials()  # pykrx import 전에 실행해야 함
-from pykrx import stock  # noqa: E402
+# pykrx 는 import 비용이 크고(pandas·matplotlib) 순매수 조회에만 쓰므로 get_investors 안에서 지연 import 한다.
 
 # ───────── 여기만 수정하세요: (야후 심볼, 표시 이름) ─────────
 # 코스피는 .KS, 코스닥은 .KQ 를 붙입니다.
@@ -92,6 +101,7 @@ INVESTOR_CACHE_SECONDS = 300  # KRX 조회는 5분간 캐시
 _inv_cache = {}
 # 야후 조회 캐시. 화면 자동 갱신(300초)보다 약간 짧게 잡아야 갱신 때마다 새 값을 받음
 QUOTE_CACHE_SECONDS = 240
+PREV_CACHE_SECONDS = 1800  # 전일 종가는 세션 중에 바뀌지 않는다
 _yf_cache = {}
 
 
@@ -115,12 +125,35 @@ def cached(key, ttl, fn):
     raise err
 
 
+def _prev_close(symbol, fallback):
+    """(전일 종가, 그 거래일 날짜). 일봉의 '마지막 봉 직전 봉' 종가를 쓴다.
+
+    fast_info["previousClose"] 는 야후가 세션 전환 때 잘못 채우는 경우가 있어 쓰지 않는다.
+    실측 예(2026-11-24): KOSPI 를 4,740.97 로 반환했으나 거래소 확정 전일 종가는 4,708.54,
+    SK하이닉스는 1,097,000 대 1,085,000 으로 등락률이 1.2%p 어긋났다. 급등락장에서 오차가 커진다.
+
+    lastPrice 와 일봉 마지막 봉은 같은 세션(진행 중이거나 막 끝난)을 가리키므로 그 직전 봉이
+    전일 종가다. 다만 장 시작 전 야후가 새 일봉을 만들기 전에는 한 세션 밀릴 수 있다.
+    """
+    def fetch():
+        h = yf.Ticker(symbol).history(period="1mo", interval="1d")["Close"].dropna()
+        if len(h) < 2:
+            raise ValueError("일봉이 2개 미만")
+        return float(h.iloc[-2]), h.index[-2].date().isoformat()
+    try:
+        return cached(("prev", symbol), PREV_CACHE_SECONDS, fetch)
+    except Exception:
+        return float(fallback), None  # 날짜 없음 = 보정 실패, fast_info 값 그대로
+
+
 def get_price(symbol):
-    """(현재가, 전일종가)"""
+    """(현재가, 전일종가, 전일종가 거래일)"""
     def fetch():
         fi = yf.Ticker(symbol).fast_info
         return float(fi["lastPrice"]), float(fi["previousClose"])
-    return cached(("price", symbol), QUOTE_CACHE_SECONDS, fetch)
+    price, fi_prev = cached(("price", symbol), QUOTE_CACHE_SECONDS, fetch)
+    prev, prev_date = _prev_close(symbol, fi_prev)
+    return price, prev, prev_date
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -178,6 +211,7 @@ def get_investors(code):
         return hit[1]
     try:
         today = dt.date.today()
+        from pykrx import stock  # 지연 import: 순매수 조회에만 필요
         df = stock.get_market_trading_value_by_date(
             (today - dt.timedelta(days=10)).strftime("%Y%m%d"),
             today.strftime("%Y%m%d"), code)
@@ -206,9 +240,9 @@ def get_quote(item, investors=True):
     code = symbol[:6]
     out = {"code": code, "name": name, "url": yahoo_url(symbol)}
     try:
-        price, prev = get_price(symbol)
-        out.update(price=price, prev_close=prev, change=price - prev,
-                   ratio=(price - prev) / prev * 100)
+        price, prev, prev_date = get_price(symbol)
+        out.update(price=price, prev_close=prev, prev_date=prev_date,
+                   change=price - prev, ratio=(price - prev) / prev * 100)
     except Exception as e:
         out["error"] = f"시세 조회 실패: {e}"
         return out
@@ -222,9 +256,9 @@ def get_market(item, investors=True):
     symbol, name, market = item
     out = {"name": name, "url": yahoo_url(symbol)}
     try:
-        price, prev = get_price(symbol)
-        out.update(price=price, prev_close=prev, change=price - prev,
-                   ratio=(price - prev) / prev * 100)
+        price, prev, prev_date = get_price(symbol)
+        out.update(price=price, prev_close=prev, prev_date=prev_date,
+                   change=price - prev, ratio=(price - prev) / prev * 100)
     except Exception as e:
         out["error"] = f"지수 조회 실패: {e}"
         return out
@@ -238,9 +272,9 @@ def get_macro(item, long=False):
     symbol, name, unit, dec, suffix = item
     out = {"name": name, "sub": unit, "dec": dec, "suffix": suffix, "url": yahoo_url(symbol)}
     try:
-        price, prev = get_price(symbol)
-        out.update(price=price, prev_close=prev, change=price - prev,
-                   ratio=(price - prev) / prev * 100)
+        price, prev, prev_date = get_price(symbol)
+        out.update(price=price, prev_close=prev, prev_date=prev_date,
+                   change=price - prev, ratio=(price - prev) / prev * 100)
     except Exception as e:
         out["error"] = f"조회 실패: {e}"
         return out
@@ -255,9 +289,9 @@ def get_us(item, is_index):
     out = {"name": name, "sub": item[2] if is_index else symbol, "dec": 2,
            "prefix": "" if is_index else "$", "url": yahoo_url(symbol)}
     try:
-        price, prev = get_price(symbol)
-        out.update(price=price, prev_close=prev, change=price - prev,
-                   ratio=(price - prev) / prev * 100)
+        price, prev, prev_date = get_price(symbol)
+        out.update(price=price, prev_close=prev, prev_date=prev_date,
+                   change=price - prev, ratio=(price - prev) / prev * 100)
     except Exception as e:
         out["error"] = f"조회 실패: {e}"
         return out
