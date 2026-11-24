@@ -104,7 +104,9 @@ class handler(BaseHTTPRequestHandler):
         out = [
             f"AS_OF {now:%Y-%m-%dT%H:%M:%S%z} Asia/Seoul",
             "SOURCE yahoo-finance(yfinance); KR quotes may lag 15-20min; low/high derived from 1m closes",
-            "FIELDS section|name|price|change|ratio_pct|prev_close|low|high|data_at_kst|age_sec|state",
+            "PRICE is the latest quote at AS_OF; series_at/series_age describe the 1m chart series only",
+            "PREV_CLOSE is the prior session's daily close; prev_date names that session (- = uncorrected)",
+            "FIELDS section|name|price|change|ratio_pct|prev_close|prev_date|low|high|series_at_kst|series_age_sec|state",
             "",
         ]
 
@@ -127,6 +129,7 @@ class handler(BaseHTTPRequestHandler):
             n = lambda v: f"{v:,.{dec}f}"
             return "|".join([section, name, n(q["price"]), f"{q['change']:+,.{dec}f}",
                              f"{q['ratio']:+.2f}", n(q["prev_close"]),
+                             q.get("prev_date") or "-",
                              n(min(vals)) if vals else "-", n(max(vals)) if vals else "-",
                              at, str(age), state])
 

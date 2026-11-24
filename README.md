@@ -106,23 +106,48 @@ security delete-generic-password -s krx-pw
 `https://<프로젝트>.vercel.app/api/plain` 은 **인증 없이** 열리고, 한 줄에 한 종목씩 파이프로 구분한 고정 포맷을 돌려줍니다. 쿠키를 들고 다닐 수 없는 도구(예: AI 에이전트의 웹 페이지 읽기)가 시세를 그대로 읽어 쓰려고 만든 경로입니다.
 
 ```
-AS_OF 2026-11-23T15:04:11+0900 Asia/Seoul
+AS_OF 2026-11-24T16:07:00+0900 Asia/Seoul
 SOURCE yahoo-finance(yfinance); KR quotes may lag 15-20min; low/high derived from 1m closes
-FIELDS section|name|price|change|ratio_pct|prev_close|low|high|data_at_kst|age_sec|state
+PRICE is the latest quote at AS_OF; series_at/series_age describe the 1m chart series only
+PREV_CLOSE is the prior session's daily close; prev_date names that session (- = uncorrected)
+FIELDS section|name|price|change|ratio_pct|prev_close|prev_date|low|high|series_at_kst|series_age_sec|state
 
-KR_INDEX|KOSPI|4,711.71|-158.25|-3.25|4,869.96|4,586.80|4,741.54|2026-11-23T15:00|240|OPEN
-KR_STOCK|삼성전자|176,500|-4,400|-2.43|180,900|171,500|178,500|2026-11-23T15:00|240|OPEN
-US_STOCK|엔비디아|125.53|-20.45|-14.01|145.98|124.10|140.22|2026-11-21T06:00|119000|CLOSED
+KR_INDEX|KOSPI|5,006.03|+297.49|+6.32|4,708.54|2026-11-23|4,885.39|5,063.02|2026-11-24T14:59|4080|CLOSED
+KR_STOCK|삼성전자|189,400|+11,900|+6.70|177,500|2026-11-23|187,600|193,200|2026-11-24T14:59|4080|CLOSED
+US_STOCK|엔비디아|165.05|+39.52|+31.48|125.53|2026-11-20|158.05|170.58|2026-11-24T05:55|12987|CLOSED
 ```
 
 - `section`: `KR_INDEX` / `KR_STOCK` / `US_INDEX` / `US_STOCK` / `MACRO`
-- `data_at_kst`, `age_sec`: 장중 데이터의 마지막 시각(한국시간)과 그 경과 초. **야후 지연이 그대로 드러나므로 읽는 쪽이 시각을 추측할 필요가 없습니다.**
+- `prev_close`, `prev_date`: 직전 거래일의 **일봉 종가**와 그 거래일. `fast_info["previousClose"]` 는 야후가 세션 전환 때 잘못 채우는 경우가 있어 쓰지 않습니다(아래 참고). `prev_date` 가 `-` 면 보정에 실패해 야후 값을 그대로 쓴 것입니다.
+- `series_at_kst`, `series_age_sec`: **1분봉 시계열**의 마지막 점과 그 경과 초. `price` 자체의 시각이 아닙니다 — 마감 뒤에는 이 값이 커져도 `price` 는 확정 종가로 갱신돼 있습니다.
 - `state`: 국내는 평일 09:00~15:40 + 오늘 데이터면 `OPEN`, 해외는 마지막 데이터가 90분 이내면 `OPEN`. 그래서 휴장일·조기 폐장이 자동으로 `CLOSED`로 나옵니다. 데이터가 없으면 `NODATA`, 조회 실패한 줄은 `section|이름|ERROR|사유`.
 - `low`/`high`: 1분봉 **종가**들의 최저·최고라 실제 장중 저가·고가와 몇 호가 차이가 날 수 있습니다.
 - 임의 쿼리(`?t=...`)는 무시합니다. 호출 측이 캐시를 우회할 때 쓰세요.
 - `/robots.txt` 도 이 함수가 직접 응답합니다 (`/api/plain` 만 Allow). 모든 경로가 함수 하나로 오기 때문에
   robots.txt 가 없으면 크롤러·에이전트가 `/api/plain` 요청 자체를 거부합니다.
 - 순매수(KRX)는 포함하지 않습니다. 장중에는 전일 값이고, KRX 로그인을 건너뛰어 응답을 빠르게 하려는 의도입니다.
+
+### 전일 종가를 일봉에서 받는 이유
+
+`fast_info["previousClose"]` 는 **믿을 수 없습니다.** 실측(2026-11-24):
+
+| | fast_info | 거래소 확정 | 등락률 오차 |
+|---|---|---|---|
+| KOSPI | 4,740.97 | 4,708.54 | +5.59% → +6.32% |
+| 삼성전자 | 178,900 | 177,500 | +5.87% → +6.70% |
+| SK하이닉스 | 1,097,000 | 1,085,000 | +5.56% → +6.73% |
+
+현재가는 정확한데 전일 종가만 어긋나므로 등락률이 전부 틀어집니다. 급등락장에서 오차가 1%p를 넘습니다. 미국 개별 종목에서는 거래가 없는 사이에 값이 바뀌는 현상도 관측됐습니다(엔비디아 145.84 → 130.01 → 129.39).
+
+그래서 일봉(`history(period="1mo", interval="1d")`)의 **마지막 봉 직전 봉** 종가를 씁니다. `lastPrice` 와 일봉 마지막 봉은 같은 세션(진행 중이거나 막 끝난)을 가리키므로 그 직전 봉이 전일 종가가 됩니다. 장 시작 전 야후가 새 일봉을 만들기 전에는 한 세션 밀릴 수 있으니 `prev_date` 로 확인하세요.
+
+### 콜드 스타트
+
+Vercel 람다는 런타임에 의존성을 설치하고(`Runtime dependencies installed in 2.15s`) `/tmp` 외에는 쓸 수 없습니다. 그래서 세 가지를 조정했습니다.
+
+- `MPLCONFIGDIR=/tmp/matplotlib` — 없으면 matplotlib import마다 폰트 캐시를 다시 만듭니다(`generated new fontManager`).
+- `yf.set_tz_cache_location("/tmp/py-yfinance")` — 없으면 매 호출마다 `TzCache`·`CookieCache` 생성이 실패하고 재조회가 일어납니다.
+- `pykrx` 지연 import — pykrx 는 pandas·matplotlib 를 끌고 오는데 순매수 조회에만 필요합니다. `/api/plain` 은 이제 pykrx 를 import 하지 않습니다.
 
 비밀값이 없고 내용이 공개 시세뿐이라 토큰을 두지 않았습니다. 주소가 알려지면 누구나 호출할 수 있다는 점(Vercel 함수 호출량)만 감안하세요. 막으려면 이 라우트를 `DASH_TOKEN` 검사 뒤로 옮기면 됩니다.
 
