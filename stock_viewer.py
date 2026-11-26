@@ -125,25 +125,47 @@ def cached(key, ttl, fn):
     raise err
 
 
-def _prev_close(symbol, fallback):
-    """(전일 종가, 그 거래일 날짜). 일봉의 '마지막 봉 직전 봉' 종가를 쓴다.
+def _daily_tail(symbol):
+    """일봉 마지막 두 봉: ((마지막 종가, 날짜), (직전 종가, 날짜), 거래소 tzinfo).
 
-    fast_info["previousClose"] 는 야후가 세션 전환 때 잘못 채우는 경우가 있어 쓰지 않는다.
-    실측 예(2026-11-24): KOSPI 를 4,740.97 로 반환했으나 거래소 확정 전일 종가는 4,708.54,
-    SK하이닉스는 1,097,000 대 1,085,000 으로 등락률이 1.2%p 어긋났다. 급등락장에서 오차가 커진다.
-
-    lastPrice 와 일봉 마지막 봉은 같은 세션(진행 중이거나 막 끝난)을 가리키므로 그 직전 봉이
-    전일 종가다. 다만 장 시작 전 야후가 새 일봉을 만들기 전에는 한 세션 밀릴 수 있다.
+    auto_adjust=False 가 중요하다. 기본값(True)은 배당락을 반영한 수정주가를 돌려주는데,
+    실측(2026-11-27) SK하이닉스 전일 종가가 1,010,437 원으로 나왔다. 1,000원 단위가 아니라
+    체결가가 될 수 없는 값이고 실제는 1,030,000 원, 등락률이 2%p 어긋났다(+4.21% 대 +2.23%).
     """
     def fetch():
-        h = yf.Ticker(symbol).history(period="1mo", interval="1d")["Close"].dropna()
+        h = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=False)["Close"].dropna()
         if len(h) < 2:
             raise ValueError("일봉이 2개 미만")
-        return float(h.iloc[-2]), h.index[-2].date().isoformat()
+        items = list(h.items())
+        (i1, v1), (i0, v0) = items[-1], items[-2]
+        return ((float(v1), i1.date().isoformat()), (float(v0), i0.date().isoformat()), i1.tzinfo)
+    return cached(("daily", symbol), PREV_CACHE_SECONDS, fetch)
+
+
+def _prev_close(symbol, price, fallback):
+    """(전일 종가, 그 거래일 날짜).
+
+    fast_info["previousClose"] 는 야후가 세션 전환 때 잘못 채우는 경우가 있어 쓰지 않는다.
+    실측(2026-11-24): KOSPI 를 4,740.97 로 반환했으나 거래소 확정치는 4,708.54 였다.
+
+    핵심은 '현재가(lastPrice)의 세션이 일봉에 들어있는지'다. 들어있으면 그 직전 봉이 전일
+    종가이고, 아직 없으면 일봉 마지막 봉 자체가 전일 종가다. 야후는 국내 지수의 일봉을 늦게
+    붙여서 개장 전에 세션이 밀린다 — 실측(2026-11-27 07:22) KOSPI 현재가는 11/26 종가인데
+    일봉 마지막 봉은 11/25 였다. 무조건 iloc[-2] 를 쓰면 두 세션 밀린 값이 나온다.
+
+    판별은 두 단계다. (a) 마지막 봉의 날짜가 거래소 현지 기준 오늘이면 그 봉이 현재 세션이다.
+    (b) 아니면 현재가가 마지막 봉 종가와 사실상 같은지 본다. 같으면 그 봉이 막 끝난 현재
+    세션이고(미국 개장 전 등), 다르면 현재가의 세션이 아직 일봉에 없다(국내 지수 개장 전).
+    """
     try:
-        return cached(("prev", symbol), PREV_CACHE_SECONDS, fetch)
+        (last_v, last_d), (prev_v, prev_d), tz = _daily_tail(symbol)
     except Exception:
         return float(fallback), None  # 날짜 없음 = 보정 실패, fast_info 값 그대로
+    if tz is not None and last_d == dt.datetime.now(tz).date().isoformat():
+        return prev_v, prev_d  # (a) 마지막 봉 = 진행 중인(또는 오늘 끝난) 세션
+    if abs(price - last_v) <= abs(last_v) * 0.001:
+        return prev_v, prev_d  # (b) 마지막 봉 = 현재가의 세션
+    return last_v, last_d      # (b) 현재가의 세션이 일봉에 없음 → 마지막 봉이 전일 종가
 
 
 def get_price(symbol):
@@ -152,7 +174,7 @@ def get_price(symbol):
         fi = yf.Ticker(symbol).fast_info
         return float(fi["lastPrice"]), float(fi["previousClose"])
     price, fi_prev = cached(("price", symbol), QUOTE_CACHE_SECONDS, fetch)
-    prev, prev_date = _prev_close(symbol, fi_prev)
+    prev, prev_date = _prev_close(symbol, price, fi_prev)
     return price, prev, prev_date
 
 
@@ -162,24 +184,24 @@ NY = ZoneInfo("America/New_York")
 
 def _fetch_intraday(symbol, macro, us=False, long=False):
     if us:  # 미국 정규장 5분봉, x축은 (최근 거래일) 09:30~16:00 뉴욕시간 고정
-        h = yf.Ticker(symbol).history(period="1d", interval="5m")["Close"].dropna()
+        h = yf.Ticker(symbol).history(period="1d", interval="5m", auto_adjust=False)["Close"].dropna()
         pts = [[int(t.timestamp()), round(float(v), 2)] for t, v in h.items()]
         if pts:
             d = dt.datetime.fromtimestamp(pts[-1][0], NY).replace(hour=9, minute=30, second=0, microsecond=0)
             domain = [int(d.timestamp()), int(d.timestamp()) + 390 * 60]
     elif macro and long:  # 장기 추이: 최근 3개월 일봉, x축은 데이터 범위
-        h = yf.Ticker(symbol).history(period="3mo", interval="1d")["Close"].dropna()
+        h = yf.Ticker(symbol).history(period="3mo", interval="1d", auto_adjust=False)["Close"].dropna()
         pts = [[int(t.timestamp()), round(float(v), 4)] for t, v in h.items()]
         if pts:
             domain = [pts[0][0], pts[-1][0]]
     elif macro:
-        h = yf.Ticker(symbol).history(period="2d", interval="15m")["Close"].dropna()
+        h = yf.Ticker(symbol).history(period="2d", interval="15m", auto_adjust=False)["Close"].dropna()
         pts = [[int(t.timestamp()), round(float(v), 4)] for t, v in h.items()]
         if pts:
             pts = [p for p in pts if p[0] >= pts[-1][0] - 86400]
             domain = [pts[0][0], pts[-1][0]]
     else:
-        h = yf.Ticker(symbol).history(period="1d", interval="1m")["Close"].dropna()
+        h = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=False)["Close"].dropna()
         pts = [[int(t.timestamp()), round(float(v), 2)] for t, v in h.items()]
         if pts:
             d = dt.datetime.fromtimestamp(pts[-1][0], KST).replace(hour=9, minute=0, second=0, microsecond=0)
