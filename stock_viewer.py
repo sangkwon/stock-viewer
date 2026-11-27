@@ -102,6 +102,9 @@ _inv_cache = {}
 # 야후 조회 캐시. 화면 자동 갱신(300초)보다 약간 짧게 잡아야 갱신 때마다 새 값을 받음
 QUOTE_CACHE_SECONDS = 240
 PREV_CACHE_SECONDS = 1800  # 전일 종가는 세션 중에 바뀌지 않는다
+INDEX_PREV_CACHE_SECONDS = 21600  # KRX 지수 전일 종가: 하루에 한 번만 바뀐다
+# 야후 지수 일봉에 직전 세션이 누락돼서 전일 종가를 KRX 에서 받는다 (아래 _krx_index_prev_close).
+INDEX_KRX_TICKER = {"KOSPI": "1001", "KOSDAQ": "2001"}
 _yf_cache = {}
 
 
@@ -166,6 +169,44 @@ def _prev_close(symbol, price, fallback):
     if abs(price - last_v) <= abs(last_v) * 0.001:
         return prev_v, prev_d  # (b) 마지막 봉 = 현재가의 세션
     return last_v, last_d      # (b) 현재가의 세션이 일봉에 없음 → 마지막 봉이 전일 종가
+
+
+def _krx_index_prev_close(market):
+    """(전일 종가, 거래일) — KRX 지수 일별 종가. 실패하면 None 을 돌려 야후 값을 쓰게 한다.
+
+    야후는 국내 '지수'의 일봉에 직전 세션을 아예 붙이지 않는 경우가 있다. 실측(2026-11-27
+    09:36, 장중) 지수 일봉의 마지막 봉이 11/25 여서 11/26 종가(KOSPI 4,711.21)를 어디서도
+    꺼낼 수 없었고, 등락률이 +0.19%(11/25 기준)로 나왔다. 실제는 +0.19% 가 아니라 11/26
+    기준이어야 한다. 같은 시각 '종목' 일봉에는 11/26 이 정상으로 있었다 — 지수에 국한된 결손이다.
+
+    KRX 일별 시세는 끝난 세션만 담으므로 판별이 단순하다. 마지막 날짜가 거래소 기준 오늘이면
+    (장 마감 후 게시됨) 그 직전이 전일 종가고, 아니면 마지막 날짜가 곧 전일 종가다.
+    """
+    ticker = INDEX_KRX_TICKER.get(market)
+    if not ticker or not HAS_KRX_LOGIN:
+        return None
+
+    def fetch():
+        from pykrx import stock  # 지연 import: pandas·matplotlib 를 끌고 온다
+        fn = next((getattr(stock, n) for n in ("get_index_ohlcv", "get_index_ohlcv_by_date")
+                   if hasattr(stock, n)), None)
+        if fn is None:
+            raise AttributeError("pykrx 에 지수 OHLCV 함수가 없음")
+        now = dt.datetime.now(KST)
+        df = fn((now - dt.timedelta(days=20)).strftime("%Y%m%d"), now.strftime("%Y%m%d"), ticker)
+        col = df["종가"] if "종가" in df.columns else df.iloc[:, 3]  # OHLC 순서상 4번째가 종가
+        col = col.dropna()
+        if len(col) < 2:
+            raise ValueError("KRX 지수 일별 시세가 2개 미만")
+        dates = [i.date().isoformat() for i in col.index]
+        if dates[-1] == now.date().isoformat():
+            return float(col.iloc[-2]), dates[-2]  # 오늘 치가 이미 게시됨
+        return float(col.iloc[-1]), dates[-1]      # 마지막 세션이 전일
+
+    try:
+        return cached(("krxidx", ticker), INDEX_PREV_CACHE_SECONDS, fetch)
+    except Exception:
+        return None
 
 
 def get_price(symbol):
@@ -279,6 +320,9 @@ def get_market(item, investors=True):
     out = {"name": name, "url": yahoo_url(symbol)}
     try:
         price, prev, prev_date = get_price(symbol)
+        krx = _krx_index_prev_close(market)  # 야후 지수 일봉은 직전 세션이 빠지므로 KRX 우선
+        if krx:
+            prev, prev_date = krx
         out.update(price=price, prev_close=prev, prev_date=prev_date,
                    change=price - prev, ratio=(price - prev) / prev * 100)
     except Exception as e:
